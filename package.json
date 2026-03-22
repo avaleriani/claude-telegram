@@ -1,0 +1,27 @@
+{
+  "name": "claude-telegram",
+  "version": "1.0.0",
+  "description": "Control Claude Code from Telegram. One file, no npm dependencies.",
+  "main": "claude-server.js",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "telegram",
+    "bot",
+    "claude-code",
+    "ai",
+    "cli",
+    "anthropic",
+    "remote",
+    "mobile"
+  ],
+  "scripts": {
+    "go": "node claude-server.js --setup",
+    "start": "pm2 delete claude-bot-dev 2>/dev/null; pm2 delete claude-bot 2>/dev/null; pm2 start ecosystem.config.js && pm2 save",
+    "dev": "pm2 delete claude-bot 2>/dev/null; pm2 delete claude-bot-dev 2>/dev/null; pm2 start ecosystem.dev.config.js && pm2 logs claude-bot-dev",
+    "stop": "pm2 delete claude-bot claude-bot-dev 2>/dev/null; echo stopped",
+    "restart": "pm2 restart claude-bot",
+    "logs": "pm2 logs claude-bot",
+    "status": "pm2 status"
+  }
+}
