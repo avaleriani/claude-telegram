@@ -3,4 +3,5 @@ state.json
 node_modules/
 .claude/
 *.log
+.bot.pid
 .DS_Store

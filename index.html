@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>claude-telegram — Claude Code from your phone</title>
-<meta name="description" content="Bridge Telegram to Claude Code CLI. One file, zero dependencies. Use Claude Code from your phone.">
+<meta name="description" content="Use Claude Code from your phone. Telegram bridge to the CLI — one file, no frameworks.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 <style>
@@ -412,6 +412,8 @@ h1 .dim { color: var(--text-dim); }
       <button class="install-copy" id="copyBtn">copy</button>
     </div>
 
+    <p style="font-family: var(--mono); font-size: 12px; color: var(--text-dim); margin-bottom: 24px;">Requires <a href="https://docs.anthropic.com/en/docs/claude-code" style="color: var(--text-dim); text-decoration: underline;">Claude Code</a> and Node.js 18+</p>
+
     <div class="hero-links">
       <a href="https://github.com/avaleriani/claude-telegram">GitHub</a>
       <a href="https://github.com/avaleriani/claude-telegram#quick-start">Docs</a>
@@ -497,10 +499,10 @@ h1 .dim { color: var(--text-dim); }
   <section class="how reveal">
     <h2>How it works</h2>
     <p class="how-content">
-      Long-polls Telegram's Bot API using Node's built-in <strong>https</strong>. Spawns the <strong>Claude CLI</strong> as a child process, parses its stream-json output, and edits a Telegram message in real-time. Handles rate limiting, file downloads, voice messages, and git operations. Persists state to a local JSON file. Runs in the background via <strong>pm2</strong>.
+      Long-polls Telegram's Bot API using Node's built-in <strong>https</strong>. Spawns the <strong>Claude CLI</strong> as a child process, parses its stream-json output, and edits a Telegram message in real-time. Handles rate limiting, file downloads, voice messages, and git operations. Persists state to a local JSON file. Runs in the background with built-in auto-restart — no process manager needed.
     </p>
     <div class="stack">
-<span class="hl">No Express.</span> No Telegraf. No node_modules.
+<span class="hl">No Express.</span> No Telegraf. No pm2. No node_modules.
 One file. Five built-ins: <span class="hl">https</span>, <span class="hl">child_process</span>, <span class="hl">fs</span>, <span class="hl">path</span>, <span class="hl">readline</span>.</div>
   </section>
 
@@ -524,6 +526,7 @@ One file. Five built-ins: <span class="hl">https</span>, <span class="hl">child_
     <div class="footer-links">
       <a href="https://github.com/avaleriani/claude-telegram">GitHub</a>
       <a href="https://github.com/avaleriani/claude-telegram#quick-start">Docs</a>
+      <a href="https://github.com/avaleriani/claude-telegram/issues/new?title=Feedback%3A%20&labels=feedback&body=%23%23%20What%20happened%3F%0A%0A%0A%23%23%20What%20did%20you%20expect%3F%0A%0A%0A%23%23%20Environment%0A-%20OS%3A%20%0A-%20Node%3A%20%0A">Feedback</a>
     </div>
   </footer>
 

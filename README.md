@@ -1,19 +1,19 @@
 # claude-telegram
 
-Control [Claude Code](https://docs.anthropic.com/en/docs/claude-code) from your phone. One file, zero dependencies.
+Use [Claude Code](https://docs.anthropic.com/en/docs/claude-code) from your phone. One file, no frameworks.
 
-I wanted to use Claude Code from my phone — check on long tasks, fire off quick prompts from the couch, send a screenshot of a bug. So I built this: a single Node.js file that bridges Telegram to the Claude CLI. No frameworks, no `npm install`, no build step.
+Wanted to use Claude Code on the go — check on long tasks, fire off quick prompts from the couch, send a screenshot of a bug. This is a single Node.js file that bridges Telegram to the Claude CLI running on your machine. No frameworks, no `npm install`, no build step.
 
 ```
 Your phone (Telegram) --> claude-server.js --> Claude CLI --> your codebase
                           ~1,500 lines
-                          zero npm dependencies
+                          no npm dependencies
                           just Node.js built-ins
 ```
 
 ## Quick start
 
-You need **Node.js 18+**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** installed and logged in, and **pm2** (`npm install -g pm2`).
+You need **Node.js 18+** and **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** installed and logged in.
 
 ### Option 1: npx (fastest)
 
@@ -30,11 +30,11 @@ npm run go
 ```
 
 The setup wizard walks you through everything:
-1. Checks that `claude` and `pm2` are installed
+1. Checks that Claude Code is installed
 2. Asks for your Telegram bot token (get one from [@BotFather](https://t.me/BotFather) in 30 seconds)
 3. Lets you pick a permission mode (how much access Claude gets)
 4. Waits for you to send a message so it can grab your chat ID
-5. Writes `.env` and starts the bot
+5. Writes `.env` and starts the bot in the background
 
 That's it. Send a message to your bot and Claude responds.
 
@@ -42,7 +42,7 @@ That's it. Send a message to your bot and Claude responds.
 
 **Full codebase access from Telegram.** Same as Claude Code in the terminal — reads, edits, creates files. Conversations persist across messages, `/new` starts fresh.
 
-**Live streaming.** Responses stream into a single message that updates as Claude types. While Claude is thinking or using tools, you see a live processing indicator with elapsed time so you know it's not stuck.
+**Live streaming.** Responses stream into a single message that updates as Claude types. While Claude is thinking or using tools, you see a live progress indicator with elapsed time so you know it's not stuck.
 
 **Files and voice.** Drop a photo, PDF, or any document — it saves to your project directory. Add a caption like "fix the bug in this screenshot" and Claude processes it. Voice messages work too.
 
@@ -52,6 +52,7 @@ That's it. Send a message to your bot and Claude responds.
 |---|---|
 | `/commit` | Stage all + commit |
 | `/cm fix the navbar` | Commit with message |
+| `/shipit` | Commit + push in one go |
 | `/push` `/pull` | Push / pull |
 | `/diff` `/log` | Changes / last 15 commits |
 | `/branch` | Switch branch (picker) |
@@ -81,16 +82,25 @@ That's it. Send a message to your bot and Claude responds.
 ## Running
 
 ```bash
-npm run go        # First-time setup + start
-npm start         # Start with pm2
-npm run dev       # Dev mode (auto-restart on file changes, logs in terminal)
-npm run stop      # Stop
-npm run restart   # Restart
-npm run logs      # Tail logs
-npm run status    # pm2 process status
+claude-telegram --setup     # First-time setup + start
+claude-telegram --start     # Start in background
+claude-telegram --stop      # Stop
+claude-telegram --logs      # Tail logs
+claude-telegram --dev       # Dev mode (watch for changes, auto-restart)
 ```
 
-The bot runs in the background via pm2 and auto-restarts on crashes.
+Or with npm scripts:
+
+```bash
+npm run go        # First-time setup + start
+npm start         # Start in background
+npm run dev       # Dev mode
+npm run stop      # Stop
+npm run logs      # Tail logs
+npm run restart   # Stop + start
+```
+
+The bot runs in the background and auto-restarts on crashes. No process manager needed.
 
 ## Config
 
@@ -122,13 +132,14 @@ claude-server.js
 ├── Long-polls Telegram's Bot API (Node's built-in https)
 ├── Spawns `claude` CLI as a child process per conversation
 ├── Parses stream-json output and edits a Telegram message in real-time
-├── Shows live processing indicator with elapsed time and tool count
+├── Shows live progress indicator with elapsed time and tool count
 ├── Handles file downloads, voice messages, git commands
+├── Runs in the background with auto-restart (no process manager needed)
 ├── Backs off automatically when hitting Telegram's rate limits
 └── Persists state to state.json, config to .env
 ```
 
-No Express. No Telegraf. No node_modules. One file using Node.js built-ins: `https`, `child_process`, `fs`, `path`, `readline`.
+No Express. No Telegraf. No pm2. No node_modules. One file using Node.js built-ins: `https`, `child_process`, `fs`, `path`, `readline`.
 
 ## Security
 

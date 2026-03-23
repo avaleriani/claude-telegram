@@ -8,6 +8,8 @@ const path = require('path');
 
 const STATE_FILE = path.join(__dirname, 'state.json');
 const ENV_FILE = path.join(__dirname, '.env');
+const PID_FILE = path.join(__dirname, '.bot.pid');
+const LOG_FILE = path.join(__dirname, 'bot.log');
 const PERM_LABELS = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
 const HANG_WARN_INTERVAL = 60000;
 const HANG_CRITICAL_INTERVAL = 120000;
@@ -172,7 +174,6 @@ async function setup() {
     // Check dependencies
     let ok = true;
     if (!checkDependency('claude', 'Claude CLI', 'npm install -g @anthropic-ai/claude-code')) ok = false;
-    if (!checkDependency('pm2', 'pm2', 'npm install -g pm2')) ok = false;
     if (!ok) {
         console.log('Install the missing dependencies above and run again.');
         process.exit(1);
@@ -277,6 +278,22 @@ loadState();
 
 const busy = {};
 const procs = {};
+const queues = {}; // per-chat message queue
+
+function enqueue(chatId, prompt, fileContext) {
+    if (!queues[chatId]) queues[chatId] = [];
+    queues[chatId].push({ prompt, fileContext });
+    const pos = queues[chatId].length;
+    send(chatId, `📋 _Queued (#${pos}):_ ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`);
+}
+
+function processQueue(chatId) {
+    if (!queues[chatId] || queues[chatId].length === 0) return;
+    if (busy[chatId]) return;
+    const next = queues[chatId].shift();
+    send(chatId, `📋 _Running queued message (${queues[chatId].length} remaining)_`);
+    runClaude(chatId, next.prompt, next.fileContext);
+}
 
 let cbIdCounter = 0;
 const cbRegistry = {};
@@ -613,7 +630,10 @@ function runPull(chatId) {
 // --- Claude CLI ---
 
 function runClaude(chatId, prompt, fileContext) {
-    if (busy[chatId]) return send(chatId, '\u26A0\uFE0F Already running a task. Use /cancel to stop it.');
+    if (busy[chatId]) {
+        enqueue(chatId, prompt, fileContext);
+        return;
+    }
     busy[chatId] = true;
 
     // Save last prompt for /retry
@@ -833,30 +853,38 @@ function runClaude(chatId, prompt, fileContext) {
         // Wait for the live message to be ready if it hasn't resolved yet
         await statusPromise;
 
-        // Collapse live message to summary
+        // Finalize live message — keep the text, just remove the progress footer
         const elapsed = Math.round((Date.now() - startTime) / 1000);
         const mins = Math.floor(elapsed / 60);
         const secs = elapsed % 60;
         const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
         const toolStr = toolCount > 0 ? ` · ${toolCount} tool${toolCount > 1 ? 's' : ''}` : '';
-        const summary = gotResponse
-            ? `✅ _done in ${timeStr}${toolStr}_`
-            : `❌ _failed after ${timeStr}_`;
-        if (liveMsgId) editMsg(chatId, liveMsgId, summary, { parse_mode: 'Markdown' });
 
-        // Send final response as a new message
-        if (fullText) {
-            send(chatId, fullText);
+        if (fullText && liveMsgId) {
+            // Edit live message to show clean final text (no progress footer)
+            editMsg(chatId, liveMsgId, fullText);
         } else if (!gotResponse) {
             const errMsg = stderrBuf.trim();
             const failText = errMsg
                 ? `Claude failed:\n\`\`\`\n${errMsg.slice(0, 2000)}\n\`\`\``
                 : 'Claude finished without a response';
-            send(chatId, failText);
+            if (liveMsgId) {
+                editMsg(chatId, liveMsgId, failText);
+            } else {
+                send(chatId, failText);
+            }
         }
 
+        // Send summary as a small follow-up
+        const summary = gotResponse
+            ? `✅ _done in ${timeStr}${toolStr}_`
+            : `❌ _failed after ${timeStr}_`;
+        send(chatId, summary);
+
         // Send back files that were created/modified during the session
+        const showFiles = (process.env.SHOW_MODIFIED_FILES || 'false').toLowerCase() === 'true';
         try {
+            if (!showFiles) throw 'skip';
             const modified = await getModifiedFiles(cwd, tsFile);
             // Filter out hidden/temp files
             const interesting = modified.filter(f =>
@@ -883,6 +911,9 @@ function runClaude(chatId, prompt, fileContext) {
 
         delete procs[chatId];
         busy[chatId] = false;
+
+        // Process next queued message
+        processQueue(chatId);
     });
 }
 
@@ -1013,7 +1044,7 @@ function handleCommand(chatId, cmd, args) {
             runPush(chatId);
             break;
 
-        case 'cp':
+        case 'shipit':
             runCommitAndPush(chatId, args || 'update');
             break;
 
@@ -1047,8 +1078,22 @@ function handleCommand(chatId, cmd, args) {
             break;
 
         case 'cancel':
-            if (procs[chatId]) { procs[chatId].kill('SIGTERM'); send(chatId, '\u23F9 Stopped.'); }
+            if (procs[chatId]) {
+                procs[chatId].kill('SIGTERM');
+                const cleared = queues[chatId]?.length || 0;
+                if (cleared) queues[chatId] = [];
+                send(chatId, `\u23F9 Stopped.${cleared ? ` ${cleared} queued message(s) cleared.` : ''}`);
+            }
             else send(chatId, '_Nothing running._');
+            break;
+
+        case 'q':
+            if (!args) {
+                const qLen = queues[chatId]?.length || 0;
+                send(chatId, qLen ? `📋 _${qLen} message(s) in queue_` : '_Queue is empty._');
+            } else {
+                enqueue(chatId, args);
+            }
             break;
 
         case 'project':
@@ -1177,7 +1222,8 @@ function handleCommand(chatId, cmd, args) {
                 '\uD83D\uDCAC *Chat*',
                 '/new \u2014 New conversation',
                 '/retry \u2014 Retry last prompt',
-                '/cancel \u2014 Stop Claude',
+                '/cancel \u2014 Stop Claude + clear queue',
+                '/q message \u2014 Queue for after current task',
                 '/model \u2014 Change model',
                 '/system \u2014 Set system prompt',
                 '/verbosity \u2014 Tool message style',
@@ -1194,7 +1240,7 @@ function handleCommand(chatId, cmd, args) {
                 '/commit \u2014 Quick commit',
                 '/cm message \u2014 Commit with message',
                 '/push \u2014 Push to remote',
-                '/cp \u2014 Commit & push',
+                '/shipit \u2014 Commit & push',
                 '/pull \u2014 Pull from remote',
                 '/stash \u2014 Stash changes',
                 '/stashpop \u2014 Pop stash',
@@ -1273,7 +1319,8 @@ function handleCommand(chatId, cmd, args) {
 const BOT_COMMANDS = [
     { command: 'new', description: 'New conversation' },
     { command: 'retry', description: 'Retry last prompt' },
-    { command: 'cancel', description: 'Stop Claude' },
+    { command: 'cancel', description: 'Stop Claude + clear queue' },
+    { command: 'q', description: 'Queue a message for after current task' },
     { command: 'project', description: 'Switch project' },
     { command: 'branch', description: 'Switch branch' },
     { command: 'model', description: 'Change model' },
@@ -1281,7 +1328,7 @@ const BOT_COMMANDS = [
     { command: 'commit', description: 'Quick commit' },
     { command: 'cm', description: 'Commit with message' },
     { command: 'push', description: 'Push' },
-    { command: 'cp', description: 'Commit & push' },
+    { command: 'shipit', description: 'Commit & push' },
     { command: 'pull', description: 'Pull' },
     { command: 'status', description: 'Claude API status' },
     { command: 'diff', description: 'Git diff' },
@@ -1472,20 +1519,148 @@ while (true) {
 
 } // end startBot
 
-const MODE = process.argv[2]; // --setup, --pm2, or nothing
+// --- Process management (replaces pm2) ---
 
-(async () => {
-    await ensureToken();
-    if (!fs.existsSync(ENV_FILE) || !process.env.ALLOWED_CHATS) {
-        await setup();
+const MODE = process.argv[2]; // --setup, --start, --stop, --logs, --dev, or nothing
+
+function isRunning() {
+    try {
+        const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8').trim());
+        process.kill(pid, 0); // test if alive
+        return pid;
+    } catch { return false; }
+}
+
+function daemonize() {
+    const out = fs.openSync(LOG_FILE, 'a');
+    const child = spawn(process.execPath, [__filename, '--daemon'], {
+        cwd: __dirname,
+        detached: true,
+        stdio: ['ignore', out, out],
+        env: { ...process.env, NODE_NO_WARNINGS: '1' },
+    });
+    fs.writeFileSync(PID_FILE, String(child.pid));
+    child.unref();
+    return child.pid;
+}
+
+function stopBot() {
+    const pid = isRunning();
+    if (!pid) {
+        console.log('  Bot is not running.');
+        return false;
     }
-    if (MODE === '--setup') {
-        const { execSync } = require('child_process');
-        console.log('Starting pm2...');
-        execSync('pm2 start ecosystem.config.js', { cwd: __dirname, stdio: 'inherit' });
-        execSync('pm2 save', { stdio: 'inherit' });
-        console.log('\nBot running! Use: pnpm stop / pnpm restart / pnpm run logs');
+    process.kill(pid, 'SIGTERM');
+    try { fs.unlinkSync(PID_FILE); } catch {}
+    console.log(`  \x1b[32m✔\x1b[0m Bot stopped (pid ${pid})`);
+    return true;
+}
+
+function tailLogs() {
+    if (!fs.existsSync(LOG_FILE)) {
+        console.log('  No log file yet. Start the bot first.');
+        process.exit(1);
+    }
+    const tail = spawn('tail', ['-f', '-n', '50', LOG_FILE], { stdio: 'inherit' });
+    process.on('SIGINT', () => { tail.kill(); process.exit(0); });
+}
+
+function startDev() {
+    console.log('\n  \x1b[36m◆\x1b[0m Dev mode — watching for changes\n');
+    let child = null;
+    let restarting = false;
+
+    function start() {
+        child = spawn(process.execPath, [__filename], {
+            cwd: __dirname,
+            stdio: 'inherit',
+            env: { ...process.env, NODE_NO_WARNINGS: '1' },
+        });
+        child.on('close', (code) => {
+            if (!restarting) {
+                console.log(`\n  Process exited (code ${code}), restarting in 1s...`);
+                setTimeout(start, 1000);
+            }
+        });
+    }
+
+    start();
+
+    // Watch for file changes
+    let debounce = null;
+    fs.watch(path.join(__dirname, 'claude-server.js'), () => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => {
+            console.log('\n  \x1b[33m↻\x1b[0m File changed, restarting...\n');
+            restarting = true;
+            if (child) child.kill('SIGTERM');
+            setTimeout(() => {
+                restarting = false;
+                start();
+            }, 500);
+        }, 300);
+    });
+
+    process.on('SIGINT', () => {
+        restarting = true;
+        if (child) child.kill('SIGTERM');
         process.exit(0);
-    }
-    await startBot();
-})();
+    });
+}
+
+// --- Daemon mode: auto-restart on crash ---
+
+if (MODE === '--daemon') {
+    (async function runWithRestart() {
+        while (true) {
+            try {
+                await startBot();
+            } catch (err) {
+                console.error(`[${new Date().toISOString()}] Bot crashed: ${err.message}`);
+                console.error('Restarting in 3s...');
+                await new Promise(r => setTimeout(r, 3000));
+            }
+        }
+    })();
+} else if (MODE === '--stop') {
+    stopBot();
+    process.exit(0);
+} else if (MODE === '--logs') {
+    tailLogs();
+} else if (MODE === '--dev') {
+    startDev();
+} else if (MODE === '--setup' || MODE === '--start') {
+    (async () => {
+        await ensureToken();
+        if (!fs.existsSync(ENV_FILE) || !process.env.ALLOWED_CHATS) {
+            await setup();
+        }
+
+        // Stop existing instance if running
+        const existing = isRunning();
+        if (existing) {
+            process.kill(existing, 'SIGTERM');
+            try { fs.unlinkSync(PID_FILE); } catch {}
+            await new Promise(r => setTimeout(r, 500));
+        }
+
+        const pid = daemonize();
+        console.log(`\n  \x1b[32m✔\x1b[0m Bot is running! (pid ${pid})\n`);
+        console.log('  Commands:');
+        console.log('    claude-telegram --logs     View logs');
+        console.log('    claude-telegram --stop     Stop');
+        console.log('    claude-telegram --start    Restart');
+        console.log('    claude-telegram --dev      Dev mode (watch + auto-restart)\n');
+        process.exit(0);
+    })();
+} else {
+    // No flag: run in foreground (direct `node claude-server.js`)
+    (async () => {
+        loadEnv();
+        await ensureToken();
+        if (!fs.existsSync(ENV_FILE) || !process.env.ALLOWED_CHATS) {
+            await setup();
+        }
+        await startBot();
+    })();
+}
