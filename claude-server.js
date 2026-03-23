@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 const https = require('https');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -7,7 +8,7 @@ const path = require('path');
 
 const STATE_FILE = path.join(__dirname, 'state.json');
 const ENV_FILE = path.join(__dirname, '.env');
-const PROGRESS_INTERVAL = 30000;
+const PERM_LABELS = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
 const HANG_WARN_INTERVAL = 60000;
 const HANG_CRITICAL_INTERVAL = 120000;
 const STREAM_EDIT_THROTTLE = 1500;
@@ -115,7 +116,7 @@ function telegramDownload(filePath) {
     });
 }
 
-function telegramSendDocument(chatId, localPath, caption) {
+function telegramSendFile(chatId, localPath, { method = 'sendDocument', fieldName = 'document', contentType = 'application/octet-stream', caption } = {}) {
     return new Promise((resolve, reject) => {
         const fileName = path.basename(localPath);
         const fileData = fs.readFileSync(localPath);
@@ -124,14 +125,14 @@ function telegramSendDocument(chatId, localPath, caption) {
         let body = '';
         body += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`;
         if (caption) body += `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`;
-        body += `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\nContent-Type: application/octet-stream\r\n\r\n`;
+        body += `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\nContent-Type: ${contentType}\r\n\r\n`;
         const tail = `\r\n--${boundary}--\r\n`;
 
         const bodyBuf = Buffer.concat([Buffer.from(body), fileData, Buffer.from(tail)]);
 
         const req = https.request({
             hostname: 'api.telegram.org',
-            path: `/bot${BOT_TOKEN}/sendDocument`,
+            path: `/bot${BOT_TOKEN}/${method}`,
             method: 'POST',
             headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': bodyBuf.length }
         }, res => {
@@ -145,33 +146,12 @@ function telegramSendDocument(chatId, localPath, caption) {
     });
 }
 
+function telegramSendDocument(chatId, localPath, caption) {
+    return telegramSendFile(chatId, localPath, { caption });
+}
+
 function telegramSendVoice(chatId, localPath) {
-    return new Promise((resolve, reject) => {
-        const fileName = path.basename(localPath);
-        const fileData = fs.readFileSync(localPath);
-        const boundary = '----FormBoundary' + Date.now().toString(36);
-
-        let body = '';
-        body += `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${chatId}\r\n`;
-        body += `--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="${fileName}"\r\nContent-Type: audio/ogg\r\n\r\n`;
-        const tail = `\r\n--${boundary}--\r\n`;
-
-        const bodyBuf = Buffer.concat([Buffer.from(body), fileData, Buffer.from(tail)]);
-
-        const req = https.request({
-            hostname: 'api.telegram.org',
-            path: `/bot${BOT_TOKEN}/sendVoice`,
-            method: 'POST',
-            headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': bodyBuf.length }
-        }, res => {
-            let buf = '';
-            res.on('data', d => buf += d);
-            res.on('end', () => { try { resolve(JSON.parse(buf)); } catch { resolve(null); } });
-        });
-        req.on('error', reject);
-        req.write(bodyBuf);
-        req.end();
-    });
+    return telegramSendFile(chatId, localPath, { method: 'sendVoice', fieldName: 'voice', contentType: 'audio/ogg' });
 }
 
 // --- First-run setup ---
@@ -215,8 +195,7 @@ async function setup() {
     const modeMap = { '1': 'bypassPermissions', '2': 'acceptEdits', '3': 'plan' };
     const permissionMode = modeMap[modeChoice] || 'bypassPermissions';
 
-    const modeNames = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
-    console.log(`\nPermission mode: ${modeNames[permissionMode]}`);
+    console.log(`\nPermission mode: ${PERM_LABELS[permissionMode]}`);
     console.log('You can change this later in .env (PERMISSION_MODE)\n');
 
     console.log('Now send any message to your bot on Telegram.\n');
@@ -240,7 +219,7 @@ async function setup() {
 
                 await telegramRequest('sendMessage', {
                     chat_id: chatId,
-                    text: `Hey ${name}! Setting up your Claude bot.\n\nChat ID: ${chatId}\nProject: ${process.cwd()}\nProjects folder: ${projectsDir}\nPermissions: ${modeNames[permissionMode]}\n\nWriting .env...`
+                    text: `Hey ${name}! Setting up your Claude bot.\n\nChat ID: ${chatId}\nProject: ${process.cwd()}\nProjects folder: ${projectsDir}\nPermissions: ${PERM_LABELS[permissionMode]}\n\nWriting .env...`
                 });
 
                 fs.writeFileSync(ENV_FILE, [
@@ -428,7 +407,6 @@ async function handleVoiceMessage(chatId, fileId) {
 // Track files modified by Claude to offer sending them back
 function getModifiedFiles(projectDir, since) {
     try {
-        const result = [];
         const proc = spawn('find', [projectDir, '-maxdepth', '3', '-type', 'f', '-newer', since, '-not', '-path', '*/.git/*', '-not', '-path', '*/node_modules/*'], { timeout: 10000 });
         return new Promise(resolve => {
             let out = '';
@@ -621,13 +599,9 @@ function runClaude(chatId, prompt, fileContext) {
 
     // Session indicator
     const projectName = path.basename(getProject(chatId));
-    const modelName = state.models[chatId] || 'default';
     const resuming = !!state.sessions[chatId];
-    const sessionLabel = resuming ? 'Resuming' : 'New';
     const verbosity = getVerbosity(chatId);
-    const statusText = `\u2728 *${sessionLabel}* \u2014 \`${projectName}\` \u2014 _${modelName}_`;
-
-    console.log(`[Claude] chat=${chatId} verbosity=${verbosity} ${sessionLabel} project=${projectName}`);
+    console.log(`[Claude] chat=${chatId} verbosity=${verbosity} resuming=${resuming} project=${projectName}`);
 
     const permMode = process.env.PERMISSION_MODE || 'bypassPermissions';
     const args = ['--permission-mode', permMode, '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
@@ -649,6 +623,9 @@ function runClaude(chatId, prompt, fileContext) {
     procs[chatId] = proc;
 
     proc.on('error', err => {
+        clearInterval(progress);
+        clearInterval(streamTimer);
+        clearInterval(thinkTimer);
         if (err.code === 'ENOENT') {
             send(chatId, '\u274C *Claude CLI not found.*\n\nMake sure it\'s installed and in your PATH:\n```\nnpm install -g @anthropic-ai/claude-code\nclaude --version\n```');
         } else {
@@ -665,53 +642,63 @@ function runClaude(chatId, prompt, fileContext) {
     let hangWarned = false;
     let stderrBuf = '';
 
-    // Streaming: accumulate text and edit a single message
-    let streamMsgId = null;
-    let streamMsgReady = false;
-    let streamText = '';
+    // Live message — shows progress, then streaming text, then collapses to summary
+    let liveMsgId = null;
+    let liveMsgReady = false;
+    const startTime = Date.now();
+
+    // Accumulated response text (full, for sending as final message)
+    let fullText = '';
+    // Visible portion for the live message (tail end, fits in 4096)
     let streamDirty = false;
     let lastEdit = 0;
     let streamTimer = null;
-    let frozenLength = 0; // chars already sent in previous Telegram messages
 
-    // Send initial status message and capture its ID — wait for it before processing
+    // Send initial live message
     const statusPromise = telegramRequest('sendMessage', {
-        chat_id: chatId, text: statusText, parse_mode: 'Markdown'
+        chat_id: chatId, text: '⏳ _thinking._', parse_mode: 'Markdown'
     }).then(res => {
         if (res?.ok) {
-            streamMsgId = res.result.message_id;
-            streamMsgReady = true;
+            liveMsgId = res.result.message_id;
+            liveMsgReady = true;
         }
     });
 
+    // Animated progress indicator — updates the live message
+    let dotCount = 1;
+    const thinkTimer = setInterval(() => {
+        if (!busy[chatId] || !liveMsgReady) return;
+        dotCount = (dotCount % 3) + 1;
+        const dots = '.'.repeat(dotCount);
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        const extra = toolCount > 0 ? ` · ${toolCount} tool${toolCount > 1 ? 's' : ''}` : '';
+
+        if (fullText) {
+            // Already streaming text — show it with a progress footer
+            const footer = `\n\n_⏳ ${elapsed}s${extra}_`;
+            const available = 4096 - footer.length;
+            const visible = fullText.length > available ? '...' + fullText.slice(-(available - 3)) : fullText;
+            editMsg(chatId, liveMsgId, visible + footer, { parse_mode: null });
+        } else {
+            // No text yet — just show thinking indicator
+            editMsg(chatId, liveMsgId, `⏳ _thinking${dots}_ ${elapsed}s${extra}`, { parse_mode: 'Markdown' });
+        }
+    }, 2000);
+
     function flushStream() {
-        if (!streamDirty || !streamMsgReady) return;
+        if (!streamDirty || !liveMsgReady || !fullText) return;
         const now = Date.now();
         if (now - lastEdit < streamEditThrottle) return;
 
-        if (streamText.length > 4000) {
-            const freezeText = streamText;
-            frozenLength += freezeText.length;
-            streamText = '';
-            streamDirty = true;
-            streamMsgReady = false;
-
-            editMsg(chatId, streamMsgId, freezeText, { parse_mode: null });
-            telegramRequest('sendMessage', {
-                chat_id: chatId, text: '_..._', parse_mode: 'Markdown'
-            }).then(res => {
-                if (res?.ok) {
-                    streamMsgId = res.result.message_id;
-                    streamMsgReady = true;
-                }
-            });
-            lastEdit = now;
-            return;
-        }
-
         streamDirty = false;
         lastEdit = now;
-        editMsg(chatId, streamMsgId, streamText, { parse_mode: null });
+
+        const elapsed = Math.round((now - startTime) / 1000);
+        const extra = toolCount > 0 ? ` · ${toolCount} tool${toolCount > 1 ? 's' : ''}` : '';
+        const footer = `\n\n_⏳ ${elapsed}s${extra}_`;
+        const available = 4096 - footer.length;
+        const visible = fullText.length > available ? '...' + fullText.slice(-(available - 3)) : fullText;
+        editMsg(chatId, liveMsgId, visible + footer, { parse_mode: null });
     }
 
     streamTimer = setInterval(flushStream, STREAM_EDIT_THROTTLE);
@@ -733,10 +720,7 @@ function runClaude(chatId, prompt, fileContext) {
             send(chatId, `_No activity for ${Math.round(idle / 1000)}s, might be stuck..._`);
             lastUserUpdate = Date.now();
         } else if (silentForUser > 10000 && toolsSinceLastText > 0 && verbosity !== 'all') {
-            // In condensed/quiet: if tools are running but user hasn't seen anything in 10s, show a dot
-            if (streamMsgReady && streamText) {
-                editMsg(chatId, streamMsgId, streamText + '\n\n\u23F3 working...', { parse_mode: null });
-            }
+            // The thinkTimer already handles status updates, just reset the counter
             lastUserUpdate = Date.now();
         }
     }, 5000);
@@ -781,7 +765,7 @@ function runClaude(chatId, prompt, fileContext) {
                             hangWarned = false;
                             toolsSinceLastText = 0;
                             lastUserUpdate = Date.now();
-                            streamText += se.delta.text;
+                            fullText += se.delta.text;
                             streamDirty = true;
                         }
                     }
@@ -796,7 +780,7 @@ function runClaude(chatId, prompt, fileContext) {
                             hangWarned = false;
                             toolsSinceLastText = 0;
                             lastUserUpdate = Date.now();
-                            streamText = block.text.slice(frozenLength);
+                            fullText = block.text;
                             streamDirty = true;
                         }
                         if (block.type === 'tool_use') {
@@ -821,26 +805,31 @@ function runClaude(chatId, prompt, fileContext) {
     proc.on('close', async () => {
         clearInterval(progress);
         clearInterval(streamTimer);
+        clearInterval(thinkTimer);
 
-        // Wait for the status message to be ready if it hasn't resolved yet
+        // Wait for the live message to be ready if it hasn't resolved yet
         await statusPromise;
 
-        // Build final text
-        let finalText = streamText;
+        // Collapse live message to summary
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+        const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        const toolStr = toolCount > 0 ? ` · ${toolCount} tool${toolCount > 1 ? 's' : ''}` : '';
+        const summary = gotResponse
+            ? `✅ _done in ${timeStr}${toolStr}_`
+            : `❌ _failed after ${timeStr}_`;
+        if (liveMsgId) editMsg(chatId, liveMsgId, summary, { parse_mode: 'Markdown' });
 
-        if (finalText && streamMsgId) {
-            editMsg(chatId, streamMsgId, finalText);
+        // Send final response as a new message
+        if (fullText) {
+            send(chatId, fullText);
         } else if (!gotResponse) {
-            // Show stderr if there was an error
             const errMsg = stderrBuf.trim();
             const failText = errMsg
                 ? `Claude failed:\n\`\`\`\n${errMsg.slice(0, 2000)}\n\`\`\``
                 : 'Claude finished without a response';
-            if (streamMsgId) {
-                editMsg(chatId, streamMsgId, failText);
-            } else {
-                send(chatId, failText);
-            }
+            send(chatId, failText);
         }
 
         // Send back files that were created/modified during the session
@@ -1192,7 +1181,6 @@ function handleCommand(chatId, cmd, args) {
 
         case 'info': {
             const permMode = process.env.PERMISSION_MODE || 'bypassPermissions';
-            const permLabels = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
             const session = state.sessions[chatId] ? 'Active' : 'None';
             send(chatId, [
                 `\uD83D\uDCCB *Info*`,
@@ -1201,7 +1189,7 @@ function handleCommand(chatId, cmd, args) {
                 `\u2022 Full path: \`${getProject(chatId)}\``,
                 `\u2022 Model: _${state.models[chatId] || 'default'}_`,
                 `\u2022 Verbosity: _${getVerbosity(chatId)}_`,
-                `\u2022 Permissions: _${permLabels[permMode] || permMode}_`,
+                `\u2022 Permissions: _${PERM_LABELS[permMode] || permMode}_`,
                 `\u2022 Session: _${session}_`,
             ].join('\n'));
             break;
@@ -1221,9 +1209,8 @@ function handleCommand(chatId, cmd, args) {
             };
             if (!args) {
                 const current = process.env.PERMISSION_MODE || 'bypassPermissions';
-                const labels = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
                 send(chatId, [
-                    `\uD83D\uDD12 *Permission mode:* ${labels[current] || current}`,
+                    `\uD83D\uDD12 *Permission mode:* ${PERM_LABELS[current] || current}`,
                     '',
                     'Change with:',
                     '`/permissions trust` \u2014 full access',
@@ -1234,8 +1221,7 @@ function handleCommand(chatId, cmd, args) {
                 const mode = validModes[args];
                 setEnv('PERMISSION_MODE', mode);
                 process.env.PERMISSION_MODE = mode;
-                const labels = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
-                send(chatId, `\uD83D\uDD12 Permission mode: *${labels[mode]}*`);
+                send(chatId, `\uD83D\uDD12 Permission mode: *${PERM_LABELS[mode]}*`);
             } else {
                 send(chatId, 'Options: `trust`, `edits`, `plan`');
             }
@@ -1290,8 +1276,7 @@ console.log(`Projects dir: ${PROJECTS_DIR}`);
 console.log(`Default verbosity: ${process.env.VERBOSITY || 'condensed'}`);
 if (ALLOWED_CHATS.length) console.log(`Allowed chats: ${ALLOWED_CHATS.join(', ')}`);
 else console.log('WARNING: No ALLOWED_CHATS set — bot is open to everyone');
-const permLabels = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
-console.log(`Permission mode: ${permLabels[process.env.PERMISSION_MODE] || process.env.PERMISSION_MODE || 'Trust all (default)'}`);
+console.log(`Permission mode: ${PERM_LABELS[process.env.PERMISSION_MODE] || process.env.PERMISSION_MODE || 'Trust all (default)'}`);
 
 while (true) {
     try {
@@ -1396,13 +1381,9 @@ while (true) {
             if (msg.voice || msg.audio) {
                 const voiceFileId = msg.voice?.file_id || msg.audio?.file_id;
                 try {
-                    const result = await handleVoiceMessage(chatId, voiceFileId);
-                    if (result && !result.startsWith('[')) {
-                        // Got a transcript, send to Claude
-                        runClaude(chatId, result);
-                    } else if (result) {
-                        // No transcript, send file context to Claude
-                        runClaude(chatId, 'The user sent a voice message. Please acknowledge it.', result);
+                    const fileContext = await handleVoiceMessage(chatId, voiceFileId);
+                    if (fileContext) {
+                        runClaude(chatId, 'The user sent a voice message. Please acknowledge it.', fileContext);
                     }
                 } catch (err) {
                     send(chatId, `Voice error: ${err.message}`);

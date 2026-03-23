@@ -1,8 +1,11 @@
 {
   "name": "claude-telegram",
   "version": "1.0.0",
-  "description": "Control Claude Code from Telegram. One file, no npm dependencies.",
+  "description": "Control Claude Code from Telegram. One file, zero dependencies.",
   "main": "claude-server.js",
+  "bin": {
+    "claude-telegram": "claude-server.js"
+  },
   "license": "MIT",
   "keywords": [
     "claude",
@@ -23,5 +26,12 @@
     "restart": "pm2 restart claude-bot",
     "logs": "pm2 logs claude-bot",
     "status": "pm2 status"
-  }
+  },
+  "files": [
+    "claude-server.js",
+    "ecosystem.config.js",
+    "ecosystem.dev.config.js",
+    ".env.example",
+    "README.md"
+  ]
 }
