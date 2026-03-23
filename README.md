@@ -34,7 +34,7 @@ The setup wizard walks you through everything:
 2. Asks for your Telegram bot token (get one from [@BotFather](https://t.me/BotFather) in 30 seconds)
 3. Lets you pick a permission mode (how much access Claude gets)
 4. Waits for you to send a message so it can grab your chat ID
-5. Writes `.env` and starts the bot in the background
+5. Writes config to `~/.claude-telegram/` and starts the bot in the background
 
 That's it. Send a message to your bot and Claude responds.
 
@@ -92,11 +92,11 @@ That's it. Send a message to your bot and Claude responds.
 ## Running
 
 ```bash
-claude-telegram --setup     # Setup wizard (token, permissions, chat ID) + start
-claude-telegram --start     # Start in background
-claude-telegram --stop      # Stop
-claude-telegram --logs      # Tail logs
-claude-telegram --dev       # Dev mode (watch for changes, auto-restart)
+npx claude-telegram --setup     # Setup wizard (token, permissions, chat ID) + start
+npx claude-telegram --start     # Start in background
+npx claude-telegram --stop      # Stop
+npx claude-telegram --logs      # Tail logs
+npx claude-telegram --dev       # Dev mode (watch for changes, auto-restart)
 ```
 
 Or with npm scripts:
