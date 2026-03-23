@@ -11,8 +11,6 @@ const ENV_FILE = path.join(__dirname, '.env');
 const PID_FILE = path.join(__dirname, '.bot.pid');
 const LOG_FILE = path.join(__dirname, 'bot.log');
 const PERM_LABELS = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
-const HANG_WARN_INTERVAL = 60000;
-const HANG_CRITICAL_INTERVAL = 120000;
 const STREAM_EDIT_THROTTLE = 1500;
 
 function loadEnv() {
@@ -279,12 +277,13 @@ loadState();
 const busy = {};
 const procs = {};
 const queues = {}; // per-chat message queue
+const liveText = {}; // per-chat latest streamed text from Claude
 
 function enqueue(chatId, prompt, fileContext) {
     if (!queues[chatId]) queues[chatId] = [];
     queues[chatId].push({ prompt, fileContext });
-    const pos = queues[chatId].length;
-    send(chatId, `📋 _Queued (#${pos}):_ ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`);
+    const total = queues[chatId].length;
+    send(chatId, `📋 _Queued (${total} pending):_ ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`);
 }
 
 function processQueue(chatId) {
@@ -666,7 +665,6 @@ function runClaude(chatId, prompt, fileContext) {
     procs[chatId] = proc;
 
     proc.on('error', err => {
-        clearInterval(progress);
         clearInterval(streamTimer);
         clearInterval(thinkTimer);
         if (err.code === 'ENOENT') {
@@ -675,14 +673,14 @@ function runClaude(chatId, prompt, fileContext) {
             send(chatId, `\u274C Failed to start Claude: ${err.message}`);
         }
         delete procs[chatId];
+        delete liveText[chatId];
         busy[chatId] = false;
+        processQueue(chatId);
     });
 
     let buffer = '';
     let gotResponse = false;
-    let lastActivity = Date.now();
     let toolCount = 0;
-    let hangWarned = false;
     let stderrBuf = '';
 
     // Live message — shows progress, then streaming text, then collapses to summary
@@ -692,6 +690,7 @@ function runClaude(chatId, prompt, fileContext) {
 
     // Accumulated response text (full, for sending as final message)
     let fullText = '';
+    liveText[chatId] = '';
     // Visible portion for the live message (tail end, fits in 4096)
     let streamDirty = false;
     let lastEdit = 0;
@@ -746,27 +745,6 @@ function runClaude(chatId, prompt, fileContext) {
 
     streamTimer = setInterval(flushStream, STREAM_EDIT_THROTTLE);
 
-    // Activity tracking: show the user Claude is working even when tools are silent
-    let lastUserUpdate = Date.now(); // last time we showed something to the user
-    let toolsSinceLastText = 0;
-
-    const progress = setInterval(() => {
-        if (!busy[chatId]) return;
-        const idle = Date.now() - lastActivity;
-        const silentForUser = Date.now() - lastUserUpdate;
-
-        if (idle > HANG_CRITICAL_INTERVAL && hangWarned) {
-            send(chatId, `*Possible hang* -- no activity for ${Math.round(idle / 1000)}s. Use /cancel to stop.`);
-            lastUserUpdate = Date.now();
-        } else if (idle > HANG_WARN_INTERVAL && !hangWarned) {
-            hangWarned = true;
-            send(chatId, `_No activity for ${Math.round(idle / 1000)}s, might be stuck..._`);
-            lastUserUpdate = Date.now();
-        } else if (silentForUser > 10000 && toolsSinceLastText > 0 && verbosity !== 'all') {
-            // The thinkTimer already handles status updates, just reset the counter
-            lastUserUpdate = Date.now();
-        }
-    }, 5000);
 
     proc.stdout.on('data', data => {
         buffer += data.toString();
@@ -804,11 +782,8 @@ function runClaude(chatId, prompt, fileContext) {
                     if (se.type === 'content_block_delta' && se.delta) {
                         if (se.delta.type === 'text_delta' && se.delta.text) {
                             gotResponse = true;
-                            lastActivity = Date.now();
-                            hangWarned = false;
-                            toolsSinceLastText = 0;
-                            lastUserUpdate = Date.now();
                             fullText += se.delta.text;
+                            liveText[chatId] = fullText;
                             streamDirty = true;
                         }
                     }
@@ -819,18 +794,12 @@ function runClaude(chatId, prompt, fileContext) {
                     for (const block of event.message.content) {
                         if (block.type === 'text' && block.text) {
                             gotResponse = true;
-                            lastActivity = Date.now();
-                            hangWarned = false;
-                            toolsSinceLastText = 0;
-                            lastUserUpdate = Date.now();
                             fullText = block.text;
+                            liveText[chatId] = fullText;
                             streamDirty = true;
                         }
                         if (block.type === 'tool_use') {
-                            lastActivity = Date.now();
-                            hangWarned = false;
                             toolCount++;
-                            toolsSinceLastText++;
                             if (verbosity === 'all') {
                                 send(chatId, `\`[tool]\` ${block.name}...`);
                             }
@@ -846,7 +815,6 @@ function runClaude(chatId, prompt, fileContext) {
     });
 
     proc.on('close', async () => {
-        clearInterval(progress);
         clearInterval(streamTimer);
         clearInterval(thinkTimer);
 
@@ -910,6 +878,7 @@ function runClaude(chatId, prompt, fileContext) {
         try { fs.unlinkSync(tsFile); } catch {}
 
         delete procs[chatId];
+        delete liveText[chatId];
         busy[chatId] = false;
 
         // Process next queued message
@@ -1077,6 +1046,7 @@ function handleCommand(chatId, cmd, args) {
             }
             break;
 
+        case 'stop':
         case 'cancel':
             if (procs[chatId]) {
                 procs[chatId].kill('SIGTERM');
@@ -1085,6 +1055,18 @@ function handleCommand(chatId, cmd, args) {
                 send(chatId, `\u23F9 Stopped.${cleared ? ` ${cleared} queued message(s) cleared.` : ''}`);
             }
             else send(chatId, '_Nothing running._');
+            break;
+
+        case 'latest':
+            if (!busy[chatId]) {
+                send(chatId, '_Claude is not running._');
+            } else if (!liveText[chatId]) {
+                send(chatId, '_No output yet — still thinking..._');
+            } else {
+                const text = liveText[chatId];
+                const truncated = text.length > 4000 ? '...' + text.slice(-3997) : text;
+                send(chatId, truncated);
+            }
             break;
 
         case 'q':
@@ -1096,6 +1078,7 @@ function handleCommand(chatId, cmd, args) {
             }
             break;
 
+        case 'switch':
         case 'project':
             if (!args) {
                 sendProjectPicker(chatId);
@@ -1222,7 +1205,8 @@ function handleCommand(chatId, cmd, args) {
                 '\uD83D\uDCAC *Chat*',
                 '/new \u2014 New conversation',
                 '/retry \u2014 Retry last prompt',
-                '/cancel \u2014 Stop Claude + clear queue',
+                '/stop \u2014 Stop Claude + clear queue',
+                '/latest \u2014 Show latest Claude output',
                 '/q message \u2014 Queue for after current task',
                 '/model \u2014 Change model',
                 '/system \u2014 Set system prompt',
@@ -1246,12 +1230,13 @@ function handleCommand(chatId, cmd, args) {
                 '/stashpop \u2014 Pop stash',
                 '',
                 '\u2699\uFE0F *Config*',
-                '/project \u2014 Switch project',
+                '/switch \u2014 Switch project',
                 '/info \u2014 Current settings',
                 '/permissions \u2014 Permission mode',
                 '/status \u2014 Claude API status',
                 '/allowed id1,id2 \u2014 Whitelist chats',
                 '/projectsdir /path \u2014 Projects folder',
+                '/ping \u2014 Check if bot is alive',
             ].join('\n'));
             break;
 
@@ -1319,25 +1304,15 @@ function handleCommand(chatId, cmd, args) {
 const BOT_COMMANDS = [
     { command: 'new', description: 'New conversation' },
     { command: 'retry', description: 'Retry last prompt' },
-    { command: 'cancel', description: 'Stop Claude + clear queue' },
-    { command: 'q', description: 'Queue a message for after current task' },
-    { command: 'project', description: 'Switch project' },
+    { command: 'stop', description: 'Stop Claude + clear queue' },
+    { command: 'latest', description: 'Show latest Claude output' },
+    { command: 'switch', description: 'Switch project' },
     { command: 'branch', description: 'Switch branch' },
-    { command: 'model', description: 'Change model' },
-    { command: 'verbosity', description: 'Tool message verbosity' },
     { command: 'commit', description: 'Quick commit' },
     { command: 'cm', description: 'Commit with message' },
-    { command: 'push', description: 'Push' },
     { command: 'shipit', description: 'Commit & push' },
+    { command: 'push', description: 'Push' },
     { command: 'pull', description: 'Pull' },
-    { command: 'status', description: 'Claude API status' },
-    { command: 'diff', description: 'Git diff' },
-    { command: 'log', description: 'Git log' },
-    { command: 'stash', description: 'Stash changes' },
-    { command: 'stashpop', description: 'Pop stash' },
-    { command: 'usage', description: 'Token usage & cost' },
-    { command: 'permissions', description: 'View/change permission mode' },
-    { command: 'info', description: 'Current project, model, settings' },
     { command: 'help', description: 'Show all commands' },
     { command: 'ping', description: 'Check if bot is alive' },
 ];
@@ -1519,7 +1494,7 @@ while (true) {
 
 } // end startBot
 
-// --- Process management (replaces pm2) ---
+// --- Process management ---
 
 const MODE = process.argv[2]; // --setup, --start, --stop, --logs, --dev, or nothing
 
@@ -1632,7 +1607,7 @@ if (MODE === '--daemon') {
 } else if (MODE === '--setup' || MODE === '--start') {
     (async () => {
         await ensureToken();
-        if (!fs.existsSync(ENV_FILE) || !process.env.ALLOWED_CHATS) {
+        if (MODE === '--setup' || !fs.existsSync(ENV_FILE) || !process.env.ALLOWED_CHATS) {
             await setup();
         }
 

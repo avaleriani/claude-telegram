@@ -477,19 +477,18 @@ h1 .dim { color: var(--text-dim); }
     <h2>Commands</h2>
     <div class="cmd-grid">
       <span class="cmd-name">/new</span><span class="cmd-desc">New conversation</span>
-      <span class="cmd-name">/cancel</span><span class="cmd-desc">Stop Claude</span>
-      <span class="cmd-name">/model</span><span class="cmd-desc">Switch model</span>
-      <span class="cmd-name">/project</span><span class="cmd-desc">Switch project</span>
-      <span class="cmd-name">/commit</span><span class="cmd-desc">Stage all + commit</span>
+      <span class="cmd-name">/retry</span><span class="cmd-desc">Retry last prompt</span>
+      <span class="cmd-name">/stop</span><span class="cmd-desc">Stop Claude + clear queue</span>
+      <span class="cmd-name">/latest</span><span class="cmd-desc">Show latest output</span>
+      <span class="cmd-name">/switch</span><span class="cmd-desc">Switch project</span>
+      <span class="cmd-name">/branch</span><span class="cmd-desc">Switch branch</span>
+      <span class="cmd-name">/commit</span><span class="cmd-desc">Quick commit</span>
+      <span class="cmd-name">/cm</span><span class="cmd-desc">Commit with message</span>
       <span class="cmd-name">/shipit</span><span class="cmd-desc">Commit &amp; push</span>
       <span class="cmd-name">/push</span><span class="cmd-desc">Push to remote</span>
       <span class="cmd-name">/pull</span><span class="cmd-desc">Pull from remote</span>
-      <span class="cmd-name">/diff</span><span class="cmd-desc">Show changes</span>
-      <span class="cmd-name">/log</span><span class="cmd-desc">Recent commits</span>
-      <span class="cmd-name">/branch</span><span class="cmd-desc">Switch branch</span>
-      <span class="cmd-name">/usage</span><span class="cmd-desc">Token usage &amp; cost</span>
-      <span class="cmd-name">/info</span><span class="cmd-desc">Current settings</span>
       <span class="cmd-name">/help</span><span class="cmd-desc">All commands</span>
+      <span class="cmd-name">/ping</span><span class="cmd-desc">Check if alive</span>
     </div>
   </section>
 
@@ -502,7 +501,7 @@ h1 .dim { color: var(--text-dim); }
       Long-polls Telegram's Bot API using Node's built-in <strong>https</strong>. Spawns the <strong>Claude CLI</strong> as a child process, parses its stream-json output, and edits a Telegram message in real-time. Handles rate limiting, file downloads, voice messages, and git operations. Persists state to a local JSON file. Runs in the background with built-in auto-restart — no process manager needed.
     </p>
     <div class="stack">
-<span class="hl">No Express.</span> No Telegraf. No pm2. No node_modules.
+<span class="hl">No Express.</span> No Telegraf. No node_modules.
 One file. Five built-ins: <span class="hl">https</span>, <span class="hl">child_process</span>, <span class="hl">fs</span>, <span class="hl">path</span>, <span class="hl">readline</span>.</div>
   </section>
 
@@ -522,7 +521,7 @@ One file. Five built-ins: <span class="hl">https</span>, <span class="hl">child_
 
   <!-- Footer -->
   <footer class="footer">
-    <span>MIT License</span>
+    <span>Made by <a href="https://github.com/avaleriani">Agu Valeriani</a> · MIT License</span>
     <div class="footer-links">
       <a href="https://github.com/avaleriani/claude-telegram">GitHub</a>
       <a href="https://github.com/avaleriani/claude-telegram#quick-start">Docs</a>

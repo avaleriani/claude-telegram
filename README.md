@@ -58,7 +58,7 @@ That's it. Send a message to your bot and Claude responds.
 | `/branch` | Switch branch (picker) |
 | `/stash` `/stashpop` | Stash and pop |
 
-**Switch projects on the fly.** `/project` opens a folder picker. `/project /path/to/dir` sets it directly.
+**Switch projects on the fly.** `/switch` opens a folder picker. `/switch /path/to/dir` sets it directly.
 
 **All commands:**
 
@@ -66,12 +66,22 @@ That's it. Send a message to your bot and Claude responds.
 |---|---|
 | `/new` | New conversation |
 | `/retry` | Re-send last prompt |
-| `/cancel` | Stop Claude mid-response |
+| `/stop` | Stop Claude + clear queue |
+| `/latest` | Show latest Claude output while running |
+| `/q message` | Queue a message for after current task |
+| `/switch` | Switch project (picker or path) |
+| `/branch` | Switch branch (picker) |
 | `/model` | Switch model (Opus / Sonnet / Haiku) |
 | `/system prompt` | Set a system prompt |
 | `/system clear` | Clear system prompt |
 | `/verbosity` | Tool call visibility (all / condensed / quiet) |
 | `/usage` | Token usage and cost (`/usage reset` to clear) |
+| `/commit` | Quick commit |
+| `/cm message` | Commit with message |
+| `/shipit` | Commit & push |
+| `/push` `/pull` | Push / pull |
+| `/diff` `/log` | Changes / last 15 commits |
+| `/stash` `/stashpop` | Stash and pop |
 | `/info` | Current settings at a glance |
 | `/permissions` | Change permission mode |
 | `/status` | Claude API status |
@@ -82,7 +92,7 @@ That's it. Send a message to your bot and Claude responds.
 ## Running
 
 ```bash
-claude-telegram --setup     # First-time setup + start
+claude-telegram --setup     # Setup wizard (token, permissions, chat ID) + start
 claude-telegram --start     # Start in background
 claude-telegram --stop      # Stop
 claude-telegram --logs      # Tail logs
@@ -139,7 +149,7 @@ claude-server.js
 └── Persists state to state.json, config to .env
 ```
 
-No Express. No Telegraf. No pm2. No node_modules. One file using Node.js built-ins: `https`, `child_process`, `fs`, `path`, `readline`.
+No Express. No Telegraf. No node_modules. One file using Node.js built-ins: `https`, `child_process`, `fs`, `path`, `readline`.
 
 ## Security
 
