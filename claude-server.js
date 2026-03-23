@@ -197,7 +197,9 @@ async function setup() {
     console.log(`\nPermission mode: ${PERM_LABELS[permissionMode]}`);
     console.log('You can change this later in .env (PERMISSION_MODE)\n');
 
-    console.log('Now send any message to your bot on Telegram.\n');
+    console.log('Almost done! Open your bot on Telegram and send any message.');
+    console.log('This lets the bot detect your chat ID.\n');
+    console.log('Waiting for your message...\n');
 
     let setupOffset = 0;
     while (true) {
