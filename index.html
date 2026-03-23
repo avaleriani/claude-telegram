@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claude-telegram — Claude Code from your phone</title>
+<meta name="description" content="Bridge Telegram to Claude Code CLI. One file, zero dependencies. Use Claude Code from your phone.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0b;
+  --surface: #111113;
+  --border: #1e1e22;
+  --text: #e8e6e3;
+  --text-dim: #7a7872;
+  --accent: #29a8eb;
+  --accent-dim: rgba(41, 168, 235, 0.12);
+  --green: #4ade80;
+  --mono: 'JetBrains Mono', monospace;
+  --serif: 'Source Serif 4', Georgia, serif;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* --- Grain overlay --- */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 9999;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* --- Hero --- */
+.hero {
+  padding: 120px 0 80px;
+  position: relative;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, var(--accent-dim) 0%, transparent 70%);
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+.hero-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hero-label::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+h1 {
+  font-family: var(--mono);
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  margin-bottom: 24px;
+}
+
+h1 .dim { color: var(--text-dim); }
+
+.hero-sub {
+  font-size: 19px;
+  color: var(--text-dim);
+  max-width: 520px;
+  margin-bottom: 40px;
+}
+
+/* --- Install block --- */
+.install {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  font-family: var(--mono);
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  position: relative;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.install:hover { border-color: var(--accent); }
+
+.install-prompt { color: var(--text-dim); user-select: none; }
+.install-cmd { color: var(--text); }
+.install-copy {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+.install-copy:hover { color: var(--text); border-color: var(--text-dim); }
+
+.hero-links {
+  display: flex;
+  gap: 24px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.hero-links a {
+  color: var(--text-dim);
+  transition: color 0.2s;
+}
+.hero-links a:hover { color: var(--text); text-decoration: none; }
+
+/* --- Divider --- */
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+
+/* --- Diagram --- */
+.diagram {
+  padding: 64px 0;
+}
+
+.diagram pre {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-dim);
+  overflow-x: auto;
+}
+
+.diagram pre .hl { color: var(--text); }
+.diagram pre .accent { color: var(--accent); }
+
+/* --- Features --- */
+.features {
+  padding: 64px 0;
+}
+
+.features h2 {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 40px;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+}
+
+@media (max-width: 580px) {
+  .feature-grid { grid-template-columns: 1fr; gap: 24px; }
+}
+
+.feature {
+  opacity: 0;
+  transform: translateY(16px);
+  animation: fadeUp 0.5s ease forwards;
+}
+
+.feature:nth-child(1) { animation-delay: 0.1s; }
+.feature:nth-child(2) { animation-delay: 0.15s; }
+.feature:nth-child(3) { animation-delay: 0.2s; }
+.feature:nth-child(4) { animation-delay: 0.25s; }
+.feature:nth-child(5) { animation-delay: 0.3s; }
+.feature:nth-child(6) { animation-delay: 0.35s; }
+
+@keyframes fadeUp {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.feature-title {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.feature-desc {
+  font-size: 15px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+/* --- Commands --- */
+.commands {
+  padding: 64px 0;
+}
+
+.commands h2 {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 24px;
+}
+
+.cmd-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 24px;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+.cmd-name { color: var(--accent); white-space: nowrap; }
+.cmd-desc { color: var(--text-dim); }
+
+/* --- How it works --- */
+.how {
+  padding: 64px 0;
+}
+
+.how h2 {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 24px;
+}
+
+.how-content {
+  font-size: 16px;
+  color: var(--text-dim);
+  line-height: 1.8;
+}
+
+.how-content strong { color: var(--text); font-weight: 600; }
+
+.stack {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 2;
+  color: var(--text-dim);
+  margin-top: 24px;
+}
+
+.stack .hl { color: var(--text); }
+
+/* --- Security --- */
+.security {
+  padding: 64px 0;
+}
+
+.security h2 {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 24px;
+}
+
+.security-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.security-list li {
+  font-size: 15px;
+  color: var(--text-dim);
+  padding-left: 20px;
+  position: relative;
+}
+
+.security-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  width: 6px;
+  height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+}
+
+.security-list li strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* --- Footer --- */
+.footer {
+  padding: 64px 0;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.footer-links {
+  display: flex;
+  gap: 20px;
+}
+
+@media (max-width: 480px) {
+  .footer { flex-direction: column; gap: 16px; text-align: center; }
+  .hero { padding: 80px 0 60px; }
+}
+
+/* --- Scroll animations --- */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-label">open source</div>
+    <h1>Claude Code<br><span class="dim">from your phone.</span></h1>
+    <p class="hero-sub">A single Node.js file that bridges Telegram to the Claude CLI. No frameworks, no dependencies, no build step.</p>
+
+    <div class="install" onclick="copyInstall()" id="installBlock">
+      <div>
+        <span class="install-prompt">$</span>
+        <span class="install-cmd">npx claude-telegram --setup</span>
+      </div>
+      <button class="install-copy" id="copyBtn">copy</button>
+    </div>
+
+    <div class="hero-links">
+      <a href="https://github.com/avaleriani/claude-telegram">GitHub</a>
+      <a href="https://github.com/avaleriani/claude-telegram#quick-start">Docs</a>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- Diagram -->
+  <section class="diagram reveal">
+    <pre>
+<span class="hl">Your phone</span> <span class="accent">(Telegram)</span>
+    <span class="accent">│</span>
+    <span class="accent">▼</span>
+<span class="hl">claude-server.js</span>      ~1,500 lines
+    <span class="accent">│</span>                  zero npm dependencies
+    <span class="accent">▼</span>                  Node.js built-ins only
+<span class="hl">Claude Code CLI</span>
+    <span class="accent">│</span>
+    <span class="accent">▼</span>
+<span class="hl">your codebase</span></pre>
+  </section>
+
+  <hr class="divider">
+
+  <!-- Features -->
+  <section class="features reveal">
+    <h2>What you get</h2>
+    <div class="feature-grid">
+      <div class="feature">
+        <div class="feature-title">Full codebase access</div>
+        <div class="feature-desc">Same as Claude Code in the terminal. Reads, edits, creates files. Conversations persist across messages.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Live streaming</div>
+        <div class="feature-desc">Responses stream into a single message that updates as Claude types. Live progress indicator with elapsed time.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Git from your phone</div>
+        <div class="feature-desc">Commit, push, pull, diff, branch switching. One-tap commit &amp; push button after changes.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Files &amp; voice</div>
+        <div class="feature-desc">Drop a photo, PDF, or document. Add a caption and Claude processes it. Voice messages too.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Switch projects</div>
+        <div class="feature-desc">Folder picker to jump between projects. Change model, system prompt, verbosity on the fly.</div>
+      </div>
+      <div class="feature">
+        <div class="feature-title">Permission modes</div>
+        <div class="feature-desc">Full access, edit-only, or read-only. You decide how much control Claude gets.</div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- Commands -->
+  <section class="commands reveal">
+    <h2>Commands</h2>
+    <div class="cmd-grid">
+      <span class="cmd-name">/new</span><span class="cmd-desc">New conversation</span>
+      <span class="cmd-name">/cancel</span><span class="cmd-desc">Stop Claude</span>
+      <span class="cmd-name">/model</span><span class="cmd-desc">Switch model</span>
+      <span class="cmd-name">/project</span><span class="cmd-desc">Switch project</span>
+      <span class="cmd-name">/commit</span><span class="cmd-desc">Stage all + commit</span>
+      <span class="cmd-name">/shipit</span><span class="cmd-desc">Commit &amp; push</span>
+      <span class="cmd-name">/push</span><span class="cmd-desc">Push to remote</span>
+      <span class="cmd-name">/pull</span><span class="cmd-desc">Pull from remote</span>
+      <span class="cmd-name">/diff</span><span class="cmd-desc">Show changes</span>
+      <span class="cmd-name">/log</span><span class="cmd-desc">Recent commits</span>
+      <span class="cmd-name">/branch</span><span class="cmd-desc">Switch branch</span>
+      <span class="cmd-name">/usage</span><span class="cmd-desc">Token usage &amp; cost</span>
+      <span class="cmd-name">/info</span><span class="cmd-desc">Current settings</span>
+      <span class="cmd-name">/help</span><span class="cmd-desc">All commands</span>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- How it works -->
+  <section class="how reveal">
+    <h2>How it works</h2>
+    <p class="how-content">
+      Long-polls Telegram's Bot API using Node's built-in <strong>https</strong>. Spawns the <strong>Claude CLI</strong> as a child process, parses its stream-json output, and edits a Telegram message in real-time. Handles rate limiting, file downloads, voice messages, and git operations. Persists state to a local JSON file. Runs in the background via <strong>pm2</strong>.
+    </p>
+    <div class="stack">
+<span class="hl">No Express.</span> No Telegraf. No node_modules.
+One file. Five built-ins: <span class="hl">https</span>, <span class="hl">child_process</span>, <span class="hl">fs</span>, <span class="hl">path</span>, <span class="hl">readline</span>.</div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- Security -->
+  <section class="security reveal">
+    <h2>Security</h2>
+    <ul class="security-list">
+      <li><strong>Runs on your machine.</strong> No cloud, no server, no middleman.</li>
+      <li><strong>Chat ID whitelist.</strong> Only authorized users can interact.</li>
+      <li><strong>No data collection.</strong> No analytics, no telemetry.</li>
+      <li><strong>Permission modes.</strong> Full access down to read-only.</li>
+      <li><strong>Tokens in .env.</strong> Gitignored, never in code.</li>
+    </ul>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span>MIT License</span>
+    <div class="footer-links">
+      <a href="https://github.com/avaleriani/claude-telegram">GitHub</a>
+      <a href="https://github.com/avaleriani/claude-telegram#quick-start">Docs</a>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+function copyInstall() {
+  navigator.clipboard.writeText('npx claude-telegram --setup').then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'copied!';
+    setTimeout(() => btn.textContent = 'copy', 2000);
+  });
+}
+
+// Scroll reveal
+const reveals = document.querySelectorAll('.reveal');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); } });
+}, { threshold: 0.15 });
+reveals.forEach(el => observer.observe(el));
+</script>
+</body>
+</html>

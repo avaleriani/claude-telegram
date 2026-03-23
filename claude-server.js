@@ -579,6 +579,29 @@ function runPush(chatId) {
     });
 }
 
+function runCommitAndPush(chatId, msg) {
+    send(chatId, '\uD83D\uDE80 Committing & pushing...');
+    const commitMsg = msg || 'update';
+    const script = `
+        git add -A &&
+        STAT=$(git diff --cached --stat | tail -1) &&
+        if [ -z "$STAT" ]; then echo "NO_CHANGES"
+        else
+            git commit -m "${commitMsg.replace(/"/g, '\\"')}" &&
+            BRANCH=$(git rev-parse --abbrev-ref HEAD) &&
+            git push origin "$BRANCH" &&
+            echo "DONE:$BRANCH"
+        fi
+    `;
+    runShellGit(chatId, script, (code, out) => {
+        if (out.includes('NO_CHANGES')) send(chatId, '_Nothing to commit._');
+        else if (out.includes('DONE:')) {
+            const branch = out.match(/DONE:(.+)/)?.[1]?.trim();
+            send(chatId, `\u2705 Committed & pushed to *${branch}*`);
+        } else send(chatId, `\u274C Failed:\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
+    });
+}
+
 function runPull(chatId) {
     send(chatId, '\u2B07\uFE0F Pulling...');
     runShellGit(chatId, 'git pull && echo "PULLED"', (code, out) => {
@@ -847,6 +870,8 @@ function runClaude(chatId, prompt, fileContext) {
                     const rel = path.relative(cwd, f);
                     return [{ text: rel, callback_data: registerCallback('sendfile', f) }];
                 });
+                // Add commit & push button
+                buttons.push([{ text: '\uD83D\uDE80 Commit & Push', callback_data: registerCallback('commitpush', 'update') }]);
                 send(chatId, `\uD83D\uDCCE _${interesting.length} file(s) modified:_`, {
                     reply_markup: JSON.stringify({ inline_keyboard: buttons })
                 });
@@ -986,6 +1011,10 @@ function handleCommand(chatId, cmd, args) {
 
         case 'push':
             runPush(chatId);
+            break;
+
+        case 'cp':
+            runCommitAndPush(chatId, args || 'update');
             break;
 
         case 'pull':
@@ -1165,6 +1194,7 @@ function handleCommand(chatId, cmd, args) {
                 '/commit \u2014 Quick commit',
                 '/cm message \u2014 Commit with message',
                 '/push \u2014 Push to remote',
+                '/cp \u2014 Commit & push',
                 '/pull \u2014 Pull from remote',
                 '/stash \u2014 Stash changes',
                 '/stashpop \u2014 Pop stash',
@@ -1251,6 +1281,7 @@ const BOT_COMMANDS = [
     { command: 'commit', description: 'Quick commit' },
     { command: 'cm', description: 'Commit with message' },
     { command: 'push', description: 'Push' },
+    { command: 'cp', description: 'Commit & push' },
     { command: 'pull', description: 'Pull' },
     { command: 'status', description: 'Claude API status' },
     { command: 'diff', description: 'Git diff' },
@@ -1362,6 +1393,11 @@ while (true) {
                         } else {
                             send(chatId, 'File no longer exists');
                         }
+                        break;
+
+                    case 'commitpush':
+                        telegramRequest('answerCallbackQuery', { callback_query_id: cb.id });
+                        runCommitAndPush(chatId, value);
                         break;
                 }
                 continue;
