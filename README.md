@@ -114,7 +114,7 @@ The bot runs in the background and auto-restarts on crashes. No process manager 
 
 ## Config
 
-All config lives in `.env` (auto-generated on first run). See [`.env.example`](.env.example) for all options.
+All config lives in `~/.claude-telegram/.env` (auto-generated on first run). See [`.env.example`](.env.example) for all options.
 
 ```env
 TELEGRAM_BOT_TOKEN=your-token

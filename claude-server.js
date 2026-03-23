@@ -6,10 +6,12 @@ const path = require('path');
 
 // --- Config ---
 
-const STATE_FILE = path.join(__dirname, 'state.json');
-const ENV_FILE = path.join(__dirname, '.env');
-const PID_FILE = path.join(__dirname, '.bot.pid');
-const LOG_FILE = path.join(__dirname, 'bot.log');
+const DATA_DIR = path.join(process.env.HOME || process.env.USERPROFILE || __dirname, '.claude-telegram');
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+const STATE_FILE = path.join(DATA_DIR, 'state.json');
+const ENV_FILE = path.join(DATA_DIR, '.env');
+const PID_FILE = path.join(DATA_DIR, '.bot.pid');
+const LOG_FILE = path.join(DATA_DIR, 'bot.log');
 const PERM_LABELS = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
 const STREAM_EDIT_THROTTLE = 1500;
 
@@ -235,6 +237,9 @@ async function setup() {
                 await telegramRequest('sendMessage', {
                     chat_id: chatId, text: '\u2705 Done! Bot is starting.'
                 });
+
+                // Flush this update so the daemon doesn't re-process it
+                await telegramRequest('getUpdates', { offset: setupOffset, timeout: 0 });
 
                 console.log(`.env written. Chat ID: ${chatId}\nPermission mode: ${permissionMode}\nStarting bot...\n`);
                 return;
@@ -1624,10 +1629,10 @@ if (MODE === '--daemon') {
         const pid = daemonize();
         console.log(`\n  \x1b[32m✔\x1b[0m Bot is running! (pid ${pid})\n`);
         console.log('  Commands:');
-        console.log('    claude-telegram --logs     View logs');
-        console.log('    claude-telegram --stop     Stop');
-        console.log('    claude-telegram --start    Restart');
-        console.log('    claude-telegram --dev      Dev mode (watch + auto-restart)\n');
+        console.log('    npx claude-telegram --logs     View logs');
+        console.log('    npx claude-telegram --stop     Stop');
+        console.log('    npx claude-telegram --start    Restart');
+        console.log('    npx claude-telegram --dev      Dev mode (watch + auto-restart)\n');
         process.exit(0);
     })();
 } else {
