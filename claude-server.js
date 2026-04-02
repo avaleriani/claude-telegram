@@ -14,6 +14,8 @@ const PID_FILE = path.join(DATA_DIR, '.bot.pid');
 const LOG_FILE = path.join(DATA_DIR, 'bot.log');
 const PERM_LABELS = { bypassPermissions: 'Trust all', acceptEdits: 'Accept edits only', plan: 'Plan mode' };
 const STREAM_EDIT_THROTTLE = 1500;
+const LAUNCHD_LABEL = 'com.claude-telegram.bot';
+const PLIST_PATH = path.join(process.env.HOME || '', 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
 
 function loadEnv() {
     if (!fs.existsSync(ENV_FILE)) return;
@@ -241,13 +243,104 @@ async function setup() {
                 // Flush this update so the daemon doesn't re-process it
                 await telegramRequest('getUpdates', { offset: setupOffset, timeout: 0 });
 
-                console.log(`.env written. Chat ID: ${chatId}\nPermission mode: ${permissionMode}\nStarting bot...\n`);
+                console.log(`.env written. Chat ID: ${chatId}\nPermission mode: ${permissionMode}\n`);
+
+                // Offer auto-start on macOS
+                if (process.platform === 'darwin') {
+                    console.log('Start bot automatically on login?\n');
+                    console.log('  This installs a macOS Launch Agent that keeps the bot');
+                    console.log('  running in the background — even after restart or sleep.');
+                    console.log('  You can remove it anytime with: npx claude-telegram --no-autostart\n');
+                    const autoChoice = await askInput('Enable auto-start? (Y/n): ');
+                    if (!autoChoice || autoChoice.toLowerCase() === 'y' || autoChoice.toLowerCase() === 'yes') {
+                        if (installAutostart()) {
+                            console.log('  \x1b[32m✔\x1b[0m Auto-start installed. Bot will survive restarts & sleep.\n');
+                            await telegramRequest('sendMessage', {
+                                chat_id: chatId, text: '🔄 Auto-start enabled — bot will run on login.'
+                            });
+                        }
+                    } else {
+                        console.log('  Skipped. You can enable it later with: npx claude-telegram --autostart\n');
+                    }
+                }
+
+                console.log('Starting bot...\n');
                 return;
             }
         } catch (err) {
             console.error('Setup error:', err.message);
         }
     }
+}
+
+// --- Launch Agent (macOS auto-start) ---
+
+function isAutostartInstalled() {
+    return fs.existsSync(PLIST_PATH);
+}
+
+function installAutostart() {
+    if (process.platform !== 'darwin') {
+        console.log('  Auto-start is only supported on macOS.');
+        return false;
+    }
+    const nodePath = process.execPath;
+    const scriptPath = path.resolve(__filename);
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LAUNCHD_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${nodePath}</string>
+        <string>${scriptPath}</string>
+        <string>--daemon</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${path.dirname(scriptPath)}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${LOG_FILE}</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_FILE}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}</string>
+        <key>HOME</key>
+        <string>${process.env.HOME || ''}</string>
+    </dict>
+</dict>
+</plist>`;
+
+    try {
+        const dir = path.dirname(PLIST_PATH);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(PLIST_PATH, plist);
+        require('child_process').execSync(`launchctl load -w "${PLIST_PATH}"`, { stdio: 'ignore' });
+        return true;
+    } catch (err) {
+        console.error(`  Failed to install launch agent: ${err.message}`);
+        return false;
+    }
+}
+
+function uninstallAutostart() {
+    if (!fs.existsSync(PLIST_PATH)) {
+        console.log('  Auto-start is not installed.');
+        return false;
+    }
+    try {
+        require('child_process').execSync(`launchctl unload -w "${PLIST_PATH}"`, { stdio: 'ignore' });
+    } catch {}
+    try { fs.unlinkSync(PLIST_PATH); } catch {}
+    console.log('  \x1b[32m✔\x1b[0m Auto-start removed.');
+    return true;
 }
 
 // --- Main bot ---
@@ -1515,7 +1608,13 @@ function isRunning() {
 
 function daemonize() {
     const out = fs.openSync(LOG_FILE, 'a');
-    const child = spawn(process.execPath, [__filename, '--daemon'], {
+    // On macOS, wrap with caffeinate -i to prevent idle sleep suspending the process
+    const isMac = process.platform === 'darwin';
+    const cmd = isMac ? 'caffeinate' : process.execPath;
+    const args = isMac
+        ? ['-i', process.execPath, __filename, '--daemon']
+        : [__filename, '--daemon'];
+    const child = spawn(cmd, args, {
         cwd: __dirname,
         detached: true,
         stdio: ['ignore', out, out],
@@ -1527,6 +1626,12 @@ function daemonize() {
 }
 
 function stopBot() {
+    // If managed by launchd, stop via launchctl
+    if (isAutostartInstalled()) {
+        try {
+            require('child_process').execSync(`launchctl stop ${LAUNCHD_LABEL}`, { stdio: 'ignore' });
+        } catch {}
+    }
     const pid = isRunning();
     if (!pid) {
         console.log('  Bot is not running.');
@@ -1604,8 +1709,22 @@ if (MODE === '--daemon') {
             }
         }
     })();
+} else if (MODE === '--autostart') {
+    if (installAutostart()) {
+        console.log('\n  \x1b[32m✔\x1b[0m Auto-start installed.');
+        console.log('  Bot will start on login and restart if it crashes.');
+        console.log('  Remove with: npx claude-telegram --no-autostart\n');
+    }
+    process.exit(0);
+} else if (MODE === '--no-autostart') {
+    uninstallAutostart();
+    process.exit(0);
 } else if (MODE === '--stop') {
     stopBot();
+    if (isAutostartInstalled()) {
+        console.log('  Note: auto-start is enabled. Bot will restart on login.');
+        console.log('  To fully disable: npx claude-telegram --no-autostart');
+    }
     process.exit(0);
 } else if (MODE === '--logs') {
     tailLogs();
@@ -1629,10 +1748,15 @@ if (MODE === '--daemon') {
         const pid = daemonize();
         console.log(`\n  \x1b[32m✔\x1b[0m Bot is running! (pid ${pid})\n`);
         console.log('  Commands:');
-        console.log('    npx claude-telegram --logs     View logs');
-        console.log('    npx claude-telegram --stop     Stop');
-        console.log('    npx claude-telegram --start    Restart');
-        console.log('    npx claude-telegram --dev      Dev mode (watch + auto-restart)\n');
+        console.log('    npx claude-telegram --logs          View logs');
+        console.log('    npx claude-telegram --stop          Stop');
+        console.log('    npx claude-telegram --start         Restart');
+        console.log('    npx claude-telegram --dev           Dev mode (watch + auto-restart)');
+        if (process.platform === 'darwin') {
+            console.log('    npx claude-telegram --autostart     Start on login (survives reboot)');
+            console.log('    npx claude-telegram --no-autostart  Remove auto-start');
+        }
+        console.log('');
         process.exit(0);
     })();
 } else {
