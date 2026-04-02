@@ -151,6 +151,16 @@ claude-server.js
 
 No Express. No Telegraf. No node_modules. One file using Node.js built-ins: `https`, `child_process`, `fs`, `path`, `readline`.
 
+## Platform support
+
+| Platform | Bot | Background daemon | Auto-start on login |
+|---|---|---|---|
+| **macOS** | Yes | Yes (`caffeinate` wrapper) | Yes (LaunchAgent) |
+| **Linux** | Yes | Yes (detached process) | Yes (systemd user service) |
+| **Windows** | Yes | Yes (detached process) | No |
+
+On Windows you need **Git for Windows** installed (provides `git` on PATH). Auto-start is not yet supported — you can use Task Scheduler manually or run the bot in the foreground.
+
 ## Security
 
 - **Runs on your machine.** No server, no cloud, no middleman. Talks directly to Telegram's Bot API.
@@ -158,6 +168,8 @@ No Express. No Telegraf. No node_modules. One file using Node.js built-ins: `htt
 - **No secrets in code.** Tokens live in `.env`, which is gitignored.
 - **No data collection.** No analytics, no telemetry, no phoning home.
 - **Permission modes.** You choose how much access Claude gets — from full access to read-only.
+- **No shell injection.** Git commands use safe argument passing (no shell interpolation).
+- **Project sandboxing.** `/switch` restricts project selection to within your configured `PROJECTS_DIR`.
 
 > **Note:** Bot messages pass through Telegram's servers (not end-to-end encrypted). The Claude CLI sends prompts and file contents to Anthropic's API. This is the same as using Claude Code normally — Telegram is just the transport layer.
 

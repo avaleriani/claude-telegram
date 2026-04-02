@@ -162,7 +162,8 @@ function telegramSendVoice(chatId, localPath) {
 
 function checkDependency(cmd, name, installHint) {
     try {
-        require('child_process').execSync(`which ${cmd}`, { stdio: 'ignore' });
+        const check = process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`;
+        require('child_process').execSync(check, { stdio: 'ignore' });
         return true;
     } catch {
         console.error(`\u274C ${name} not found. Install it first:\n   ${installHint}\n`);
@@ -273,20 +274,23 @@ async function setup() {
     }
 }
 
-// --- Launch Agent (macOS auto-start) ---
+// --- Auto-start (macOS LaunchAgent / Linux systemd) ---
+
+const SYSTEMD_UNIT = 'claude-telegram.service';
+const SYSTEMD_PATH = path.join(process.env.HOME || '', '.config', 'systemd', 'user', SYSTEMD_UNIT);
 
 function isAutostartInstalled() {
-    return fs.existsSync(PLIST_PATH);
+    if (process.platform === 'darwin') return fs.existsSync(PLIST_PATH);
+    if (process.platform === 'linux') return fs.existsSync(SYSTEMD_PATH);
+    return false;
 }
 
 function installAutostart() {
-    if (process.platform !== 'darwin') {
-        console.log('  Auto-start is only supported on macOS.');
-        return false;
-    }
     const nodePath = process.execPath;
     const scriptPath = path.resolve(__filename);
-    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+
+    if (process.platform === 'darwin') {
+        const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -317,28 +321,77 @@ function installAutostart() {
     </dict>
 </dict>
 </plist>`;
+        try {
+            const dir = path.dirname(PLIST_PATH);
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(PLIST_PATH, plist);
+            require('child_process').execSync(`launchctl load -w "${PLIST_PATH}"`, { stdio: 'ignore' });
+            return true;
+        } catch (err) {
+            console.error(`  Failed to install launch agent: ${err.message}`);
+            return false;
+        }
+    } else if (process.platform === 'linux') {
+        const unit = `[Unit]
+Description=Claude Telegram Bot
+After=network-online.target
+Wants=network-online.target
 
-    try {
-        const dir = path.dirname(PLIST_PATH);
-        fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(PLIST_PATH, plist);
-        require('child_process').execSync(`launchctl load -w "${PLIST_PATH}"`, { stdio: 'ignore' });
-        return true;
-    } catch (err) {
-        console.error(`  Failed to install launch agent: ${err.message}`);
+[Service]
+Type=simple
+ExecStart=${nodePath} ${scriptPath} --daemon
+WorkingDirectory=${path.dirname(scriptPath)}
+Restart=always
+RestartSec=3
+Environment=PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}
+Environment=HOME=${process.env.HOME || ''}
+StandardOutput=append:${LOG_FILE}
+StandardError=append:${LOG_FILE}
+
+[Install]
+WantedBy=default.target`;
+        try {
+            fs.mkdirSync(path.dirname(SYSTEMD_PATH), { recursive: true });
+            fs.writeFileSync(SYSTEMD_PATH, unit);
+            require('child_process').execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
+            require('child_process').execSync(`systemctl --user enable --now ${SYSTEMD_UNIT}`, { stdio: 'ignore' });
+            return true;
+        } catch (err) {
+            console.error(`  Failed to install systemd service: ${err.message}`);
+            return false;
+        }
+    } else {
+        console.log('  Auto-start is only supported on macOS and Linux.');
         return false;
     }
 }
 
 function uninstallAutostart() {
-    if (!fs.existsSync(PLIST_PATH)) {
-        console.log('  Auto-start is not installed.');
+    if (process.platform === 'darwin') {
+        if (!fs.existsSync(PLIST_PATH)) {
+            console.log('  Auto-start is not installed.');
+            return false;
+        }
+        try {
+            require('child_process').execSync(`launchctl unload -w "${PLIST_PATH}"`, { stdio: 'ignore' });
+        } catch {}
+        try { fs.unlinkSync(PLIST_PATH); } catch {}
+    } else if (process.platform === 'linux') {
+        if (!fs.existsSync(SYSTEMD_PATH)) {
+            console.log('  Auto-start is not installed.');
+            return false;
+        }
+        try {
+            require('child_process').execSync(`systemctl --user disable --now ${SYSTEMD_UNIT}`, { stdio: 'ignore' });
+        } catch {}
+        try { fs.unlinkSync(SYSTEMD_PATH); } catch {}
+        try {
+            require('child_process').execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
+        } catch {}
+    } else {
+        console.log('  Auto-start is not supported on this platform.');
         return false;
     }
-    try {
-        require('child_process').execSync(`launchctl unload -w "${PLIST_PATH}"`, { stdio: 'ignore' });
-    } catch {}
-    try { fs.unlinkSync(PLIST_PATH); } catch {}
     console.log('  \x1b[32m✔\x1b[0m Auto-start removed.');
     return true;
 }
@@ -557,9 +610,9 @@ function sendProjectPicker(chatId, browseDir) {
         buttons.push([{ text: isCurrent ? '> SELECT THIS FOLDER' : 'SELECT THIS FOLDER', callback_data: registerCallback('project', dir) }]);
     }
 
-    // Parent directory button
+    // Parent directory button (don't go above PROJECTS_DIR)
     const parent = path.dirname(dir);
-    if (parent !== dir) {
+    if (parent !== dir && dir !== PROJECTS_DIR && dir.startsWith(PROJECTS_DIR)) {
         buttons.push([{ text: '.. (up)', callback_data: registerCallback('browse', parent) }]);
     }
 
@@ -656,74 +709,101 @@ function runGit(chatId, args, label) {
     });
 }
 
-function runShellGit(chatId, script, done) {
-    if (busy[chatId]) return send(chatId, 'A task is already running, please wait...');
-    busy[chatId] = true;
-    const cwd = getProject(chatId);
-    const proc = spawn('bash', ['-c', script], { cwd, timeout: 60000 });
-    let output = '';
-    proc.stdout.on('data', d => output += d.toString());
-    proc.stderr.on('data', d => output += d.toString());
-    proc.on('close', (code) => { busy[chatId] = false; done(code, output.trim()); });
+function spawnGit(cwd, args) {
+    return new Promise(resolve => {
+        const proc = spawn('git', args, { cwd, timeout: 60000 });
+        let output = '';
+        proc.stdout.on('data', d => output += d.toString());
+        proc.stderr.on('data', d => output += d.toString());
+        proc.on('close', code => resolve({ code, output: output.trim() }));
+    });
 }
 
 function runCommit(chatId, msg) {
+    if (busy[chatId]) return send(chatId, 'A task is already running, please wait...');
+    busy[chatId] = true;
     send(chatId, '\uD83D\uDCBE Committing...');
     const commitMsg = msg || 'update';
-    const script = `
-        git add -A &&
-        STAT=$(git diff --cached --stat | tail -1) &&
-        if [ -z "$STAT" ]; then echo "NO_CHANGES"
-        else git commit -m "${commitMsg.replace(/"/g, '\\"')}" && echo "COMMITTED"
-        fi
-    `;
-    runShellGit(chatId, script, (code, out) => {
-        if (out.includes('NO_CHANGES')) send(chatId, '_Nothing to commit._');
-        else if (out.includes('COMMITTED')) send(chatId, `\u2705 Committed: *${commitMsg}*`);
-        else send(chatId, `\u274C Commit failed:\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
-    });
+    const cwd = getProject(chatId);
+    (async () => {
+        try {
+            await spawnGit(cwd, ['add', '-A']);
+            const diff = await spawnGit(cwd, ['diff', '--cached', '--stat']);
+            if (!diff.output) {
+                send(chatId, '_Nothing to commit._');
+            } else {
+                const result = await spawnGit(cwd, ['commit', '-m', commitMsg]);
+                if (result.code === 0) send(chatId, `\u2705 Committed: *${commitMsg}*`);
+                else send(chatId, `\u274C Commit failed:\n\`\`\`\n${result.output.slice(0, 2000)}\n\`\`\``);
+            }
+        } catch (err) {
+            send(chatId, `\u274C Commit error: ${err.message}`);
+        } finally { busy[chatId] = false; }
+    })();
 }
 
 function runPush(chatId) {
+    if (busy[chatId]) return send(chatId, 'A task is already running, please wait...');
+    busy[chatId] = true;
     send(chatId, '\u2B06\uFE0F Pushing...');
-    const script = `BRANCH=$(git rev-parse --abbrev-ref HEAD) && git push origin "$BRANCH" && echo "PUSHED:$BRANCH"`;
-    runShellGit(chatId, script, (code, out) => {
-        if (out.includes('PUSHED:')) {
-            const branch = out.match(/PUSHED:(.+)/)?.[1]?.trim();
-            send(chatId, `\u2705 Pushed to *${branch}*`);
-        } else send(chatId, `\u274C Push failed:\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
-    });
+    const cwd = getProject(chatId);
+    (async () => {
+        try {
+            const br = await spawnGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+            const branch = br.output.trim();
+            const result = await spawnGit(cwd, ['push', 'origin', branch]);
+            if (result.code === 0) send(chatId, `\u2705 Pushed to *${branch}*`);
+            else send(chatId, `\u274C Push failed:\n\`\`\`\n${result.output.slice(0, 2000)}\n\`\`\``);
+        } catch (err) {
+            send(chatId, `\u274C Push error: ${err.message}`);
+        } finally { busy[chatId] = false; }
+    })();
 }
 
 function runCommitAndPush(chatId, msg) {
+    if (busy[chatId]) return send(chatId, 'A task is already running, please wait...');
+    busy[chatId] = true;
     send(chatId, '\uD83D\uDE80 Committing & pushing...');
     const commitMsg = msg || 'update';
-    const script = `
-        git add -A &&
-        STAT=$(git diff --cached --stat | tail -1) &&
-        if [ -z "$STAT" ]; then echo "NO_CHANGES"
-        else
-            git commit -m "${commitMsg.replace(/"/g, '\\"')}" &&
-            BRANCH=$(git rev-parse --abbrev-ref HEAD) &&
-            git push origin "$BRANCH" &&
-            echo "DONE:$BRANCH"
-        fi
-    `;
-    runShellGit(chatId, script, (code, out) => {
-        if (out.includes('NO_CHANGES')) send(chatId, '_Nothing to commit._');
-        else if (out.includes('DONE:')) {
-            const branch = out.match(/DONE:(.+)/)?.[1]?.trim();
-            send(chatId, `\u2705 Committed & pushed to *${branch}*`);
-        } else send(chatId, `\u274C Failed:\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
-    });
+    const cwd = getProject(chatId);
+    (async () => {
+        try {
+            await spawnGit(cwd, ['add', '-A']);
+            const diff = await spawnGit(cwd, ['diff', '--cached', '--stat']);
+            if (!diff.output) {
+                send(chatId, '_Nothing to commit._');
+            } else {
+                const cm = await spawnGit(cwd, ['commit', '-m', commitMsg]);
+                if (cm.code !== 0) {
+                    send(chatId, `\u274C Commit failed:\n\`\`\`\n${cm.output.slice(0, 2000)}\n\`\`\``);
+                    return;
+                }
+                const br = await spawnGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
+                const branch = br.output.trim();
+                const push = await spawnGit(cwd, ['push', 'origin', branch]);
+                if (push.code === 0) send(chatId, `\u2705 Committed & pushed to *${branch}*`);
+                else send(chatId, `\u274C Push failed:\n\`\`\`\n${push.output.slice(0, 2000)}\n\`\`\``);
+            }
+        } catch (err) {
+            send(chatId, `\u274C Error: ${err.message}`);
+        } finally { busy[chatId] = false; }
+    })();
 }
 
 function runPull(chatId) {
+    if (busy[chatId]) return send(chatId, 'A task is already running, please wait...');
+    busy[chatId] = true;
     send(chatId, '\u2B07\uFE0F Pulling...');
-    runShellGit(chatId, 'git pull && echo "PULLED"', (code, out) => {
-        if (out.includes('PULLED')) send(chatId, `\u2705 Pulled:\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
-        else send(chatId, `\u274C Pull failed:\n\`\`\`\n${out.slice(0, 2000)}\n\`\`\``);
-    });
+    const cwd = getProject(chatId);
+    (async () => {
+        try {
+            const result = await spawnGit(cwd, ['pull']);
+            if (result.code === 0) send(chatId, `\u2705 Pulled:\n\`\`\`\n${result.output.slice(0, 2000)}\n\`\`\``);
+            else send(chatId, `\u274C Pull failed:\n\`\`\`\n${result.output.slice(0, 2000)}\n\`\`\``);
+        } catch (err) {
+            send(chatId, `\u274C Pull error: ${err.message}`);
+        } finally { busy[chatId] = false; }
+    })();
 }
 
 // --- Claude CLI ---
@@ -1184,7 +1264,10 @@ function handleCommand(chatId, cmd, args) {
                 sendProjectPicker(chatId);
             } else {
                 const resolved = path.resolve(args);
-                if (!fs.existsSync(resolved)) send(chatId, `Not found: \`${resolved}\``);
+                const rel = path.relative(PROJECTS_DIR, resolved);
+                if (rel.startsWith('..') || path.isAbsolute(rel)) {
+                    send(chatId, `\u274C Path must be within projects dir: \`${PROJECTS_DIR}\``);
+                } else if (!fs.existsSync(resolved)) send(chatId, `Not found: \`${resolved}\``);
                 else if (!fs.statSync(resolved).isDirectory()) send(chatId, `Not a directory: \`${resolved}\``);
                 else {
                     state.projects[chatId] = resolved;
@@ -1648,8 +1731,26 @@ function tailLogs() {
         console.log('  No log file yet. Start the bot first.');
         process.exit(1);
     }
-    const tail = spawn('tail', ['-f', '-n', '50', LOG_FILE], { stdio: 'inherit' });
-    process.on('SIGINT', () => { tail.kill(); process.exit(0); });
+    // Cross-platform: use Node fs instead of `tail -f`
+    const content = fs.readFileSync(LOG_FILE, 'utf8');
+    const lines = content.split('\n');
+    console.log(lines.slice(-50).join('\n'));
+    // Watch for new content
+    let size = fs.statSync(LOG_FILE).size;
+    fs.watchFile(LOG_FILE, { interval: 500 }, () => {
+        const newSize = fs.statSync(LOG_FILE).size;
+        if (newSize > size) {
+            const fd = fs.openSync(LOG_FILE, 'r');
+            const buf = Buffer.alloc(newSize - size);
+            fs.readSync(fd, buf, 0, buf.length, size);
+            fs.closeSync(fd);
+            process.stdout.write(buf.toString());
+            size = newSize;
+        } else if (newSize < size) {
+            size = newSize; // file was truncated
+        }
+    });
+    process.on('SIGINT', () => { fs.unwatchFile(LOG_FILE); process.exit(0); });
 }
 
 function startDev() {
@@ -1752,7 +1853,7 @@ if (MODE === '--daemon') {
         console.log('    npx claude-telegram --stop          Stop');
         console.log('    npx claude-telegram --start         Restart');
         console.log('    npx claude-telegram --dev           Dev mode (watch + auto-restart)');
-        if (process.platform === 'darwin') {
+        if (process.platform === 'darwin' || process.platform === 'linux') {
             console.log('    npx claude-telegram --autostart     Start on login (survives reboot)');
             console.log('    npx claude-telegram --no-autostart  Remove auto-start');
         }

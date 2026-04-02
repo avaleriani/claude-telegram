@@ -1,4 +1,5 @@
 .env
+.env.backup
 state.json
 node_modules/
 .claude/
