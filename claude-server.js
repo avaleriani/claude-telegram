@@ -158,6 +158,68 @@ function telegramSendVoice(chatId, localPath) {
     return telegramSendFile(chatId, localPath, { method: 'sendVoice', fieldName: 'voice', contentType: 'audio/ogg' });
 }
 
+// --- Claude binary resolution ---
+// The `claude` CLI can live in several places depending on how it was installed:
+//   - npm global (on PATH)
+//   - native installer (~/.local/bin/claude)
+//   - legacy local installer (~/.claude/local/claude)
+//   - Homebrew (/opt/homebrew/bin or /usr/local/bin)
+// LaunchAgents and systemd units inherit a minimal PATH, so `which claude` from
+// a user shell isn't enough — we probe known locations and cache the result.
+
+function resolveClaudeBin() {
+    if (resolveClaudeBin._cached) return resolveClaudeBin._cached;
+
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    const isWin = process.platform === 'win32';
+    const exe = isWin ? 'claude.exe' : 'claude';
+
+    if (process.env.CLAUDE_BIN && fs.existsSync(process.env.CLAUDE_BIN)) {
+        return (resolveClaudeBin._cached = process.env.CLAUDE_BIN);
+    }
+
+    try {
+        const cmd = isWin ? `where ${exe}` : `command -v ${exe}`;
+        const out = require('child_process')
+            .execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+            .trim().split(/\r?\n/)[0].trim();
+        if (out && fs.existsSync(out)) return (resolveClaudeBin._cached = out);
+    } catch {}
+
+    const candidates = [
+        path.join(home, '.local', 'bin', exe),
+        path.join(home, '.claude', 'local', 'claude'),
+        '/opt/homebrew/bin/claude',
+        '/usr/local/bin/claude',
+        path.join(home, '.npm-global', 'bin', 'claude'),
+        path.join(home, 'n', 'bin', 'claude'),
+    ];
+    for (const c of candidates) {
+        if (fs.existsSync(c)) return (resolveClaudeBin._cached = c);
+    }
+    return null;
+}
+
+function claudePathsForEnv() {
+    const home = process.env.HOME || '';
+    return [
+        path.join(home, '.local', 'bin'),
+        path.join(home, '.claude', 'local'),
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        path.join(home, '.npm-global', 'bin'),
+    ];
+}
+
+function extendedPath() {
+    const sep = process.platform === 'win32' ? ';' : ':';
+    const current = (process.env.PATH || '/usr/local/bin:/usr/bin:/bin').split(sep).filter(Boolean);
+    for (const p of claudePathsForEnv()) {
+        if (!current.includes(p)) current.push(p);
+    }
+    return current.join(sep);
+}
+
 // --- First-run setup ---
 
 function checkDependency(cmd, name, installHint) {
@@ -175,13 +237,12 @@ async function setup() {
     console.log('\n=== FIRST-RUN SETUP ===\n');
 
     // Check dependencies
-    let ok = true;
-    if (!checkDependency('claude', 'Claude CLI', 'npm install -g @anthropic-ai/claude-code')) ok = false;
-    if (!ok) {
-        console.log('Install the missing dependencies above and run again.');
+    if (!resolveClaudeBin()) {
+        console.error('\u274C Claude CLI not found. Install it first:\n   https://docs.claude.com/claude-code/quickstart\n   or: npm install -g @anthropic-ai/claude-code\n');
+        console.log('Install the missing dependency above and run again.');
         process.exit(1);
     }
-    console.log('\u2705 Dependencies OK\n');
+    console.log(`\u2705 Dependencies OK (claude: ${resolveClaudeBin()})\n`);
 
     // Permission mode selection
     console.log('How should Claude handle permissions?\n');
@@ -315,7 +376,7 @@ function installAutostart() {
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}</string>
+        <string>${extendedPath()}</string>
         <key>HOME</key>
         <string>${process.env.HOME || ''}</string>
     </dict>
@@ -343,7 +404,7 @@ ExecStart=${nodePath} ${scriptPath} --daemon
 WorkingDirectory=${path.dirname(scriptPath)}
 Restart=always
 RestartSec=3
-Environment=PATH=${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}
+Environment=PATH=${extendedPath()}
 Environment=HOME=${process.env.HOME || ''}
 StandardOutput=append:${LOG_FILE}
 StandardError=append:${LOG_FILE}
@@ -470,8 +531,36 @@ function getVerbosity(chatId) {
 
 // --- Markdown sanitization ---
 
+// Telegram's legacy "Markdown" parse_mode is much narrower than the
+// GitHub-flavored Markdown Claude emits: bold is a single `*` (not `**`),
+// headers and `__bold__` aren't supported, and `-`/`+`/`*` bullets render
+// literally. Convert the common GFM constructs so messages don't look clunky.
+function convertGfm(text) {
+    return text
+        // ATX headers (`## Title`) -> bold line
+        .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*#*$/gm, '*$1*')
+        // **bold** / __bold__ -> *bold*
+        .replace(/\*\*([^\n]+?)\*\*/g, '*$1*')
+        .replace(/__([^\n]+?)__/g, '*$1*')
+        // Bullet markers at line start -> bullet glyph
+        .replace(/^([ \t]*)[-*+][ \t]+/gm, '$1• ')
+        // Horizontal rules -> drop
+        .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '');
+}
+
 function sanitizeMarkdown(text) {
-    let result = text;
+    // Transform only plain-text segments — never touch fenced or inline code,
+    // where `**`, `#`, and leading `-` are meaningful source, not formatting.
+    const segments = [];
+    const codeRe = /```[\s\S]*?```|`[^`\n]*`/g;
+    let last = 0, m;
+    while ((m = codeRe.exec(text)) !== null) {
+        if (m.index > last) segments.push(convertGfm(text.slice(last, m.index)));
+        segments.push(m[0]);
+        last = m.index + m[0].length;
+    }
+    if (last < text.length) segments.push(convertGfm(text.slice(last)));
+    let result = segments.join('');
 
     // Fix unclosed code blocks
     const codeBlocks = result.match(/```/g) || [];
@@ -719,11 +808,61 @@ function spawnGit(cwd, args) {
     });
 }
 
+// Cheap fallback when Claude isn't available: summarize staged file names.
+function heuristicCommitMessage(nameStatus) {
+    const files = nameStatus.split('\n').filter(Boolean)
+        .map(l => l.split(/\s+/).slice(1).join(' ').trim()).filter(Boolean);
+    if (files.length === 0) return 'update';
+    if (files.length === 1) return `update ${files[0]}`;
+    return `update ${files.length} files`;
+}
+
+// Generate a commit message from the staged diff. Asks the Claude CLI for a
+// Conventional-Commits-style message; falls back to a file-name summary.
+function generateCommitMessage(cwd) {
+    return new Promise(resolve => {
+        spawnGit(cwd, ['diff', '--cached', '--name-status']).then(ns => {
+            if (!ns.output) return resolve(null); // nothing staged
+            const fallback = heuristicCommitMessage(ns.output);
+            const claudeBin = resolveClaudeBin();
+            if (!claudeBin) return resolve(fallback);
+
+            spawnGit(cwd, ['diff', '--cached']).then(d => {
+                const diff = (d.output || '').slice(0, 12000);
+                const prompt =
+                    'Write a single git commit message for the staged changes below using ' +
+                    'Conventional Commits style (e.g. "feat: ...", "fix: ...", "refactor: ..."). ' +
+                    'Subject line under 60 chars. Add a short body only if the "why" is not obvious. ' +
+                    'Output ONLY the commit message — no code fences, no preamble.\n\n' +
+                    '```diff\n' + diff + '\n```';
+                const args = ['--permission-mode', 'bypassPermissions', '-p', prompt];
+                const proc = spawn(claudeBin, args, {
+                    cwd, timeout: 60000, env: { ...process.env, PATH: extendedPath() }
+                });
+                let out = '';
+                proc.stdout.on('data', x => out += x.toString());
+                proc.on('error', () => resolve(fallback));
+                proc.on('close', () => {
+                    let msg = out.trim()
+                        .replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/, '')
+                        .trim();
+                    resolve(msg || fallback);
+                });
+            });
+        });
+    });
+}
+
+// Sentinel callback value meaning "auto-generate the commit message".
+const AUTO_COMMIT = '__auto__';
+function needsAutoMessage(msg) {
+    return !msg || msg === 'update' || msg === AUTO_COMMIT;
+}
+
 function runCommit(chatId, msg) {
     if (busy[chatId]) return send(chatId, 'A task is already running, please wait...');
     busy[chatId] = true;
     send(chatId, '\uD83D\uDCBE Committing...');
-    const commitMsg = msg || 'update';
     const cwd = getProject(chatId);
     (async () => {
         try {
@@ -732,6 +871,11 @@ function runCommit(chatId, msg) {
             if (!diff.output) {
                 send(chatId, '_Nothing to commit._');
             } else {
+                let commitMsg = msg;
+                if (needsAutoMessage(commitMsg)) {
+                    send(chatId, '\uD83D\uDCDD _Writing commit message..._');
+                    commitMsg = (await generateCommitMessage(cwd)) || 'update';
+                }
                 const result = await spawnGit(cwd, ['commit', '-m', commitMsg]);
                 if (result.code === 0) send(chatId, `\u2705 Committed: *${commitMsg}*`);
                 else send(chatId, `\u274C Commit failed:\n\`\`\`\n${result.output.slice(0, 2000)}\n\`\`\``);
@@ -764,7 +908,6 @@ function runCommitAndPush(chatId, msg) {
     if (busy[chatId]) return send(chatId, 'A task is already running, please wait...');
     busy[chatId] = true;
     send(chatId, '\uD83D\uDE80 Committing & pushing...');
-    const commitMsg = msg || 'update';
     const cwd = getProject(chatId);
     (async () => {
         try {
@@ -773,6 +916,11 @@ function runCommitAndPush(chatId, msg) {
             if (!diff.output) {
                 send(chatId, '_Nothing to commit._');
             } else {
+                let commitMsg = msg;
+                if (needsAutoMessage(commitMsg)) {
+                    send(chatId, '\uD83D\uDCDD _Writing commit message..._');
+                    commitMsg = (await generateCommitMessage(cwd)) || 'update';
+                }
                 const cm = await spawnGit(cwd, ['commit', '-m', commitMsg]);
                 if (cm.code !== 0) {
                     send(chatId, `\u274C Commit failed:\n\`\`\`\n${cm.output.slice(0, 2000)}\n\`\`\``);
@@ -781,7 +929,7 @@ function runCommitAndPush(chatId, msg) {
                 const br = await spawnGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
                 const branch = br.output.trim();
                 const push = await spawnGit(cwd, ['push', 'origin', branch]);
-                if (push.code === 0) send(chatId, `\u2705 Committed & pushed to *${branch}*`);
+                if (push.code === 0) send(chatId, `\u2705 Committed & pushed to *${branch}*\n_${commitMsg.split('\n')[0]}_`);
                 else send(chatId, `\u274C Push failed:\n\`\`\`\n${push.output.slice(0, 2000)}\n\`\`\``);
             }
         } catch (err) {
@@ -841,14 +989,24 @@ function runClaude(chatId, prompt, fileContext) {
     const tsFile = path.join(cwd, `.claude_ts_${Date.now()}`);
     try { fs.writeFileSync(tsFile, ''); } catch {}
 
-    const proc = spawn('claude', args, { cwd, timeout: 600000 });
+    const claudeBin = resolveClaudeBin();
+    if (!claudeBin) {
+        send(chatId, '\u274C *Claude CLI not found.*\n\nInstall it with the native installer or npm:\n```\ncurl -fsSL https://claude.ai/install.sh | bash\n```\nor\n```\nnpm install -g @anthropic-ai/claude-code\n```\nThen restart the bot.');
+        delete liveText[chatId];
+        busy[chatId] = false;
+        processQueue(chatId);
+        return;
+    }
+
+    const spawnEnv = { ...process.env, PATH: extendedPath() };
+    const proc = spawn(claudeBin, args, { cwd, timeout: 600000, env: spawnEnv });
     procs[chatId] = proc;
 
     proc.on('error', err => {
         clearInterval(streamTimer);
         clearInterval(thinkTimer);
         if (err.code === 'ENOENT') {
-            send(chatId, '\u274C *Claude CLI not found.*\n\nMake sure it\'s installed and in your PATH:\n```\nnpm install -g @anthropic-ai/claude-code\nclaude --version\n```');
+            send(chatId, `\u274C *Claude CLI not found* at \`${claudeBin}\`.\n\nReinstall with:\n\`\`\`\ncurl -fsSL https://claude.ai/install.sh | bash\n\`\`\`\nor\n\`\`\`\nnpm install -g @anthropic-ai/claude-code\n\`\`\``);
         } else {
             send(chatId, `\u274C Failed to start Claude: ${err.message}`);
         }
@@ -1047,7 +1205,7 @@ function runClaude(chatId, prompt, fileContext) {
                     return [{ text: rel, callback_data: registerCallback('sendfile', f) }];
                 });
                 // Add commit & push button
-                buttons.push([{ text: '\uD83D\uDE80 Commit & Push', callback_data: registerCallback('commitpush', 'update') }]);
+                buttons.push([{ text: '\uD83D\uDE80 Commit & Push', callback_data: registerCallback('commitpush', AUTO_COMMIT) }]);
                 send(chatId, `\uD83D\uDCCE _${interesting.length} file(s) modified:_`, {
                     reply_markup: JSON.stringify({ inline_keyboard: buttons })
                 });
@@ -1194,7 +1352,7 @@ function handleCommand(chatId, cmd, args) {
             break;
 
         case 'shipit':
-            runCommitAndPush(chatId, args || 'update');
+            runCommitAndPush(chatId, args || null);
             break;
 
         case 'pull':
