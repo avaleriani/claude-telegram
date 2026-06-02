@@ -509,13 +509,17 @@ function processQueue(chatId) {
 }
 
 let cbIdCounter = 0;
-const cbRegistry = {};
+const cbRegistry = new Map(); // Map keeps insertion order, so we can evict oldest
+const CB_LIMIT = 1000;
 function registerCallback(prefix, value) {
     const key = `${prefix}:${cbIdCounter++}`;
-    cbRegistry[key] = value;
+    cbRegistry.set(key, value);
+    if (cbRegistry.size > CB_LIMIT) {
+        cbRegistry.delete(cbRegistry.keys().next().value);
+    }
     return key;
 }
-function resolveCallback(key) { return cbRegistry[key]; }
+function resolveCallback(key) { return cbRegistry.get(key); }
 
 function getProject(chatId) {
     return state.projects[chatId] || DEFAULT_PROJECT;
@@ -536,16 +540,25 @@ function getVerbosity(chatId) {
 // headers and `__bold__` aren't supported, and `-`/`+`/`*` bullets render
 // literally. Convert the common GFM constructs so messages don't look clunky.
 function convertGfm(text) {
-    return text
-        // ATX headers (`## Title`) -> bold line
-        .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*#*$/gm, '*$1*')
-        // **bold** / __bold__ -> *bold*
-        .replace(/\*\*([^\n]+?)\*\*/g, '*$1*')
-        .replace(/__([^\n]+?)__/g, '*$1*')
+    // Telegram legacy Markdown: bold is *x*, italic is _x_. GFM uses **/__ for
+    // bold and */_ for italic. Stash bold as placeholders first so the italic
+    // pass (single *) can't clobber it, then restore.
+    const bold = [];
+    const stash = s => ` B${bold.push(s) - 1} `;
+    let t = text
+        // ATX headers (`## Title`) -> bold
+        .replace(/^[ \t]*#{1,6}[ \t]+(.+?)[ \t]*#*$/gm, (_, h) => stash(h))
+        // **bold** / __bold__ -> bold
+        .replace(/\*\*([^\n]+?)\*\*/g, (_, b) => stash(b))
+        .replace(/__([^\n]+?)__/g, (_, b) => stash(b))
         // Bullet markers at line start -> bullet glyph
         .replace(/^([ \t]*)[-*+][ \t]+/gm, '$1• ')
         // Horizontal rules -> drop
-        .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '');
+        .replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '')
+        // Remaining single *italic* -> _italic_ (avoid mid-word * like a*b)
+        .replace(/(?<![\w*])\*(?!\s)([^*\n]+?)(?<!\s)\*(?![\w*])/g, '_$1_');
+    // Restore bold
+    return t.replace(/ B(\d+) /g, (_, i) => `*${bold[+i]}*`);
 }
 
 function sanitizeMarkdown(text) {
@@ -601,10 +614,23 @@ function sendChunked(chatId, text, extra = {}) {
     return chain.then(() => results);
 }
 
+// Per-chat outbound FIFO. Telegram orders messages by server arrival, so firing
+// several sends concurrently (e.g. final text, then summary, then file list) lets
+// them race and display out of order. Chaining each chat's sends guarantees order.
+const outQueues = {};
+function queueOut(chatId, fn) {
+    const prev = outQueues[chatId] || Promise.resolve();
+    const result = prev.then(() => fn());
+    outQueues[chatId] = result.catch(() => {}); // keep the chain alive on failure
+    return result;
+}
+
 function send(chatId, text, extra = {}) {
     const sanitized = sanitizeMarkdown(String(text));
-    return sendChunked(chatId, sanitized, { parse_mode: 'Markdown', ...extra }).catch(() =>
-        sendChunked(chatId, String(text), extra)
+    return queueOut(chatId, () =>
+        sendChunked(chatId, sanitized, { parse_mode: 'Markdown', ...extra }).catch(() =>
+            sendChunked(chatId, String(text), extra)
+        )
     );
 }
 
@@ -665,12 +691,12 @@ async function handleVoiceMessage(chatId, fileId) {
 // Track files modified by Claude to offer sending them back
 function getModifiedFiles(projectDir, since) {
     try {
-        const proc = spawn('find', [projectDir, '-maxdepth', '3', '-type', 'f', '-newer', since, '-not', '-path', '*/.git/*', '-not', '-path', '*/node_modules/*'], { timeout: 10000 });
+        const proc = spawn('find', [projectDir, '-maxdepth', '3', '-type', 'f', '-newer', since, '-not', '-path', '*/.git/*', '-not', '-path', '*/node_modules/*', '-print0'], { timeout: 10000 });
         return new Promise(resolve => {
             let out = '';
             proc.stdout.on('data', d => out += d.toString());
             proc.on('close', () => {
-                const files = out.trim().split('\n').filter(f => f);
+                const files = out.split('\0').filter(f => f);
                 resolve(files);
             });
         });
@@ -1034,10 +1060,10 @@ function runClaude(chatId, prompt, fileContext) {
     let lastEdit = 0;
     let streamTimer = null;
 
-    // Send initial live message
-    const statusPromise = telegramRequest('sendMessage', {
+    // Send initial live message (through the queue so it lands before any follow-ups)
+    const statusPromise = queueOut(chatId, () => telegramRequest('sendMessage', {
         chat_id: chatId, text: '⏳ _thinking._', parse_mode: 'Markdown'
-    }).then(res => {
+    })).then(res => {
         if (res?.ok) {
             liveMsgId = res.result.message_id;
             liveMsgReady = true;
