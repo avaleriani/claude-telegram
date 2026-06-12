@@ -589,19 +589,25 @@ function sanitizeMarkdown(text) {
 
 // --- Send helpers ---
 
+// Split text into Telegram-sized chunks, preferring newline boundaries.
+function chunkText(text, size = 4096) {
+    const chunks = [];
+    let remaining = String(text);
+    while (remaining.length > 0) {
+        if (remaining.length <= size) { chunks.push(remaining); break; }
+        let splitAt = remaining.lastIndexOf('\n', size);
+        if (splitAt < size / 2) splitAt = size;
+        chunks.push(remaining.slice(0, splitAt));
+        remaining = remaining.slice(splitAt);
+    }
+    return chunks;
+}
+
 function sendChunked(chatId, text, extra = {}) {
     const str = String(text);
     if (!str) return telegramRequest('sendMessage', { chat_id: chatId, text: '(empty)', ...extra });
 
-    const chunks = [];
-    let remaining = str;
-    while (remaining.length > 0) {
-        if (remaining.length <= 4096) { chunks.push(remaining); break; }
-        let splitAt = remaining.lastIndexOf('\n', 4096);
-        if (splitAt < 2048) splitAt = 4096;
-        chunks.push(remaining.slice(0, splitAt));
-        remaining = remaining.slice(splitAt);
-    }
+    const chunks = chunkText(str);
 
     let chain = Promise.resolve();
     const results = [];
@@ -1052,8 +1058,14 @@ function runClaude(chatId, prompt, fileContext) {
     let liveMsgReady = false;
     const startTime = Date.now();
 
-    // Accumulated response text (full, for sending as final message)
+    // Accumulated response text (full, for sending as final message).
+    // committedText holds finalized assistant text blocks (joined with blank
+    // lines); pendingText holds the in-flight streamed deltas of the current
+    // block. A run with tool calls emits several assistant messages — keep
+    // them all instead of overwriting with the latest.
     let fullText = '';
+    let committedText = '';
+    let pendingText = '';
     liveText[chatId] = '';
     // Visible portion for the live message (tail end, fits in 4096)
     let streamDirty = false;
@@ -1146,7 +1158,8 @@ function runClaude(chatId, prompt, fileContext) {
                     if (se.type === 'content_block_delta' && se.delta) {
                         if (se.delta.type === 'text_delta' && se.delta.text) {
                             gotResponse = true;
-                            fullText += se.delta.text;
+                            pendingText += se.delta.text;
+                            fullText = committedText ? `${committedText}\n\n${pendingText}` : pendingText;
                             liveText[chatId] = fullText;
                             streamDirty = true;
                         }
@@ -1158,7 +1171,10 @@ function runClaude(chatId, prompt, fileContext) {
                     for (const block of event.message.content) {
                         if (block.type === 'text' && block.text) {
                             gotResponse = true;
-                            fullText = block.text;
+                            // Canonical text for this block — replaces its streamed deltas
+                            committedText = committedText ? `${committedText}\n\n${block.text}` : block.text;
+                            pendingText = '';
+                            fullText = committedText;
                             liveText[chatId] = fullText;
                             streamDirty = true;
                         }
@@ -1193,8 +1209,13 @@ function runClaude(chatId, prompt, fileContext) {
         const toolStr = toolCount > 0 ? ` · ${toolCount} tool${toolCount > 1 ? 's' : ''}` : '';
 
         if (fullText && liveMsgId) {
-            // Edit live message to show clean final text (no progress footer)
-            editMsg(chatId, liveMsgId, fullText);
+            // Edit live message to show clean final text (no progress footer).
+            // editMsg caps at 4096 chars, so anything longer must be split:
+            // first chunk replaces the live message, the rest follow as
+            // ordinary messages — nothing gets silently truncated.
+            const chunks = chunkText(fullText, 4000);
+            editMsg(chatId, liveMsgId, chunks[0]);
+            for (const chunk of chunks.slice(1)) send(chatId, chunk);
         } else if (!gotResponse) {
             const errMsg = stderrBuf.trim();
             const failText = errMsg
